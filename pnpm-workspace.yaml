@@ -1,0 +1,49 @@
+packages:
+  - apps/*
+
+allowBuilds:
+  esbuild: true
+  lefthook: true
+
+strictDepBuilds: true
+blockExoticSubdeps: true
+
+minimumReleaseAge: 20160
+minimumReleaseAgeExclude:
+  - '@asamuzakjp/dom-selector'
+  - '@biomejs/biome'
+  - '@csstools/css-syntax-patches-for-csstree'
+  - '@biomejs/cli-darwin-arm64'
+  - '@biomejs/cli-darwin-x64'
+  - '@biomejs/cli-linux-arm64'
+  - '@biomejs/cli-linux-arm64-musl'
+  - '@biomejs/cli-linux-x64'
+  - '@biomejs/cli-linux-x64-musl'
+  - '@biomejs/cli-win32-arm64'
+  - '@biomejs/cli-win32-x64'
+  - '@playwright/test'
+  - playwright
+  - playwright-core
+  - '@tanstack/history'
+  - '@tanstack/query-core'
+  - '@tanstack/query-persist-client-core'
+  - '@tanstack/react-query'
+  - '@tanstack/react-router'
+  - '@tanstack/react-store'
+  - '@tanstack/router-core'
+  - '@tanstack/router-generator'
+  - '@tanstack/router-plugin'
+  - '@tanstack/store'
+  - '@testing-library/jest-dom'
+  - '@testing-library/react'
+  - '@testing-library/user-event'
+  - '@types/react'
+  - '@types/react-dom'
+  - '@vitejs/plugin-react'
+  - jsdom
+  - lefthook
+  - react
+  - react-dom
+  - typescript
+  - vite
+  - vitest

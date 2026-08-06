@@ -1,0 +1,22 @@
+# Docker build-context trim (apps/worker/Dockerfile builds from the repo root).
+# Credentials safety: .env and .env.* are NEVER part of any build context.
+.git
+.venv
+node_modules
+.codegraph
+.atl
+.agents
+.pytest_cache
+.ruff_cache
+__pycache__
+*.py[cod]
+*.log
+.env
+.env.*
+openspec
+docs
+infra
+.github
+coverage
+apps/web
+apps/*/tests
