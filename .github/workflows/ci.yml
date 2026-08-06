@@ -82,7 +82,9 @@ jobs:
       POSTGRES_DB: raguard
     services:
       postgres:
-        image: postgres:17
+        # pgvector build so migration 0002's `CREATE EXTENSION vector` plus
+        # halfvec/HNSW indexes resolve; matches infra/compose.yaml image.
+        image: pgvector/pgvector:0.8.6-pg17
         env:
           POSTGRES_USER: raguard
           POSTGRES_PASSWORD: change-me
@@ -109,7 +111,9 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v9
+        # setup-uv does not publish a @v9 major alias; pin to its latest
+        # exact release tag (the repo's major-alias policy cannot apply here).
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
           cache-dependency-glob: 'uv.lock'
@@ -132,7 +136,7 @@ jobs:
 
       - name: Worker startup gate (declared runtime command, --burst)
         env:
-          REDIS_URL: redis://redis:6379/0
+          REDIS_URL: redis://127.0.0.1:6379/0
           DATABASE_URL: postgresql+psycopg://raguard:change-me@127.0.0.1:55432/raguard
         run: uv run arq raguard_worker.settings.WorkerSettings --burst
 
