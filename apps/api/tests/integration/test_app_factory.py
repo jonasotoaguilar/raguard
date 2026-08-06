@@ -1,13 +1,12 @@
 """Integration smoke tests: app factory wiring (PR 4d, task 4d.1).
 
 ``create_app`` (``raguard_api.main``) is the production composition root: it
-registers the standard error envelope and mounts exactly the auth, org, and
-documents routers. These smoke tests lock the factory behavior on the real
-PostgreSQL harness: unauthenticated requests get the standard 401 envelope,
-unknown paths return 404, settings are threaded into the auth router, and the
-mounted surface is exactly login plus the org operations plus document
-ingestion — no logout route, no new scope. The PR 4b/4c boundary files stay
-main-free; this file owns the factory-harness coverage.
+registers the standard error envelope and mounts exactly the auth, org,
+documents, and retrieval routers. These smoke tests lock the factory behavior
+on the real PostgreSQL harness: unauthenticated requests get the standard 401
+envelope, unknown paths return 404, settings are threaded into the auth
+router, and the mounted surface is exactly login plus the org operations plus
+document ingestion plus retrieval search — no logout route, no new scope.
 """
 
 import pytest
@@ -31,6 +30,7 @@ EXPECTED_SURFACE = {
     ("POST", "/api/documents"),
     ("GET", "/api/documents"),
     ("GET", "/api/documents/{document_id}"),
+    ("POST", "/api/search"),
 }
 
 

@@ -80,6 +80,20 @@ def test_keyword_query_orders_by_rank_desc_then_chunk_id_asc():
     assert "ORDER BY rank DESC, chunks.id ASC" in sql
 
 
+def test_keyword_query_filters_on_tsquery_match_after_tenant_predicate():
+    """Keyword candidates must be actual tsquery matches, tenant-filtered first.
+
+    Without the ``@@`` predicate the signal ranks every tenant chunk (rank 0.0
+    for non-matches), so a no-match query would never return the neutral empty
+    result required by the spec.
+    """
+    sql = _compiled(build_keyword_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT))
+
+    match = "chunks.search_vector @@ plainto_tsquery('simple', %(query)s)"
+    assert match in sql
+    assert sql.index("chunks.tenant_id") < sql.index("@@")
+
+
 def test_keyword_query_limits_candidates():
     statement = build_keyword_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT)
 

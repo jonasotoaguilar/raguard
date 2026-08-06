@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     retrieval_ef_search: int = 100
     retrieval_max_query_length: int = 2000
     embedding_model: str = "text-embedding-3-small"
+    openai_api_key: str = ""
+    provider_timeout_seconds: float = 30.0
 
     model_config = {"extra": "ignore"}
 
