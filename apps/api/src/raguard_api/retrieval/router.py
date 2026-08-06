@@ -88,6 +88,7 @@ def create_retrieval_router(
                     scope,
                     settings.retrieval_candidates,
                     settings.retrieval_ef_search,
+                    settings.retrieval_semantic_max_distance,
                     vectors[0],
                 ),
             )
@@ -121,9 +122,12 @@ async def _semantic_candidates(
     scope: AuthorizationScope,
     limit: int,
     ef_search: int,
+    max_distance: float,
     embedding: list[float],
 ) -> list[Candidate]:
-    statement = build_semantic_query(tenant_predicate=scope.tenant_predicate, limit=limit)
+    statement = build_semantic_query(
+        tenant_predicate=scope.tenant_predicate, limit=limit, max_distance=max_distance
+    )
     async with session_factory() as session:
         await session.execute(build_ef_search_statement(ef_search=ef_search))
         rows = (await session.execute(statement, {"embedding": embedding})).all()

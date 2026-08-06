@@ -27,6 +27,7 @@ def test_retrieval_defaults_match_design():
     assert settings.retrieval_top_k == 10
     assert settings.retrieval_top_k_max == 50
     assert settings.retrieval_ef_search == 100
+    assert settings.retrieval_semantic_max_distance == 0.5
     assert settings.retrieval_max_query_length == 2000
     assert settings.embedding_model == "text-embedding-3-small"
 
@@ -34,11 +35,13 @@ def test_retrieval_defaults_match_design():
 def test_retrieval_fields_are_environment_configurable(monkeypatch):
     monkeypatch.setenv("RRF_K", "42")
     monkeypatch.setenv("RETRIEVAL_EF_SEARCH", "120")
+    monkeypatch.setenv("RETRIEVAL_SEMANTIC_MAX_DISTANCE", "0.25")
 
     settings = _settings()
 
     assert settings.rrf_k == 42
     assert settings.retrieval_ef_search == 120
+    assert settings.retrieval_semantic_max_distance == 0.25
 
 
 def test_startup_rejects_ef_search_below_candidates():
@@ -58,6 +61,8 @@ def test_startup_rejects_ef_search_below_candidates():
         ("retrieval_top_k_max", 51),
         ("retrieval_ef_search", 0),
         ("retrieval_ef_search", 1001),
+        ("retrieval_semantic_max_distance", 0),
+        ("retrieval_semantic_max_distance", 2.1),
         ("retrieval_max_query_length", 0),
         ("retrieval_max_query_length", 10001),
     ],
@@ -65,6 +70,19 @@ def test_startup_rejects_ef_search_below_candidates():
 def test_startup_rejects_out_of_range_values(field, value):
     with pytest.raises(ValueError):
         _settings(**{field: value})
+
+
+def test_semantic_max_distance_bounds_are_inclusive():
+    settings = _settings(retrieval_semantic_max_distance=2.0)
+
+    assert settings.retrieval_semantic_max_distance == 2.0
+
+
+def test_semantic_max_distance_rejects_zero_or_negative():
+    with pytest.raises(ValueError, match="retrieval_semantic_max_distance"):
+        _settings(retrieval_semantic_max_distance=0)
+    with pytest.raises(ValueError, match="retrieval_semantic_max_distance"):
+        _settings(retrieval_semantic_max_distance=-0.1)
 
 
 def test_startup_rejects_top_k_above_configured_max():

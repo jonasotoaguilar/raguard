@@ -3,9 +3,10 @@
 Field names map to uppercase environment variables (JWT_SECRET,
 SESSION_COOKIE_SECURE, ALLOWED_ORIGINS as JSON, ...). ``jwt_secret`` has no
 default: production must fail fast when the signing key is unset. Retrieval
-fields are bounded at instantiation (task 1.5): any out-of-range value and
-any ef_search below the candidate count fail startup, mirroring the worker's
-dispatch-bound guard.
+fields are bounded at instantiation (task 1.5): any out-of-range value, any
+ef_search below the candidate count, and any semantic max distance outside
+the pgvector cosine-distance range (0, 2] fail startup, mirroring the
+worker's dispatch-bound guard.
 """
 
 from functools import lru_cache
@@ -22,6 +23,7 @@ def validate_retrieval_bounds(
     top_k: int,
     top_k_max: int,
     ef_search: int,
+    max_distance: float,
     max_query_length: int,
 ) -> None:
     """Startup guard: retrieval settings must satisfy the design bounds (task 1.5)."""
@@ -39,6 +41,11 @@ def validate_retrieval_bounds(
         raise ValueError(
             "retrieval bounds violated: "
             f"ef_search={ef_search} candidates={candidates}; require ef_search >= candidates"
+        )
+    if not 0 < max_distance <= 2.0:
+        raise ValueError(
+            "retrieval_semantic_max_distance out of bounds: "
+            f"{max_distance}; require 0 < value <= 2.0 (pgvector cosine distance)"
         )
     if not 1 <= max_query_length <= 10_000:
         raise ValueError(
@@ -66,12 +73,18 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 20 * 1024 * 1024
 
     # --- Retrieval defaults/bounds (design: RRF k=60, candidates 50, top_k 10,
-    # ef_search 100, max query 2000 chars, embedding model shared with worker). ---
+    # ef_search 100, semantic max distance 0.5, max query 2000 chars, embedding
+    # model shared with worker). Semantic max distance is pgvector cosine
+    # distance (0..2; 0 identical, 1 orthogonal, 2 opposite). The 0.5 default
+    # keeps chunks with meaningful directional agreement (cosine similarity
+    # >= 0.5) while excluding near-orthogonal/opposite nearest neighbors, so a
+    # populated tenant with no real match returns the neutral empty result. ---
     rrf_k: int = 60
     retrieval_candidates: int = 50
     retrieval_top_k: int = 10
     retrieval_top_k_max: int = 50
     retrieval_ef_search: int = 100
+    retrieval_semantic_max_distance: float = 0.5
     retrieval_max_query_length: int = 2000
     embedding_model: str = "text-embedding-3-small"
     openai_api_key: str = ""
@@ -86,6 +99,7 @@ class Settings(BaseSettings):
             top_k=self.retrieval_top_k,
             top_k_max=self.retrieval_top_k_max,
             ef_search=self.retrieval_ef_search,
+            max_distance=self.retrieval_semantic_max_distance,
             max_query_length=self.retrieval_max_query_length,
         )
 

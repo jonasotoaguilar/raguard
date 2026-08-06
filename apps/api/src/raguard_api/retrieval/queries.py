@@ -11,7 +11,7 @@ with a chunk-id tiebreak, and limits candidates; fusion re-ranks by position.
 from collections.abc import Callable
 
 from pgvector.sqlalchemy import HALFVEC
-from sqlalchemy import Select, String, TextClause, and_, bindparam, func, select, text
+from sqlalchemy import Float, Select, String, TextClause, and_, bindparam, func, select, text
 from sqlalchemy.sql.elements import ColumnElement
 
 from raguard_api.documents.contracts import EMBEDDING_DIMENSION
@@ -51,10 +51,19 @@ def build_keyword_query(*, tenant_predicate: TenantPredicate, limit: int) -> Sel
     )
 
 
-def build_semantic_query(*, tenant_predicate: TenantPredicate, limit: int) -> Select:
-    """Tenant-filtered cosine query: distance asc, chunk id asc, bounded candidates."""
+def build_semantic_query(
+    *, tenant_predicate: TenantPredicate, limit: int, max_distance: float
+) -> Select:
+    """Tenant-filtered cosine query within ``max_distance``, distance asc, chunk id asc.
+
+    ``max_distance`` is a pgvector cosine-distance cutoff (0..2): candidates
+    are real matches only, so a populated tenant with no semantically relevant
+    chunk returns the neutral empty result. Like every other value, the cutoff
+    binds as a parameter and never appears as a literal.
+    """
     embedding = bindparam("embedding", type_=HALFVEC(EMBEDDING_DIMENSION))
-    distance = Chunk.embedding.cosine_distance(embedding).label("distance")
+    distance_expr = Chunk.embedding.cosine_distance(embedding)
+    distance = distance_expr.label("distance")
     return (
         select(
             Chunk.id.label("chunk_id"),
@@ -68,7 +77,10 @@ def build_semantic_query(*, tenant_predicate: TenantPredicate, limit: int) -> Se
             Document,
             and_(Document.tenant_id == Chunk.tenant_id, Document.id == Chunk.document_id),
         )
-        .where(tenant_predicate(Chunk.tenant_id))
+        .where(
+            tenant_predicate(Chunk.tenant_id),
+            distance_expr <= bindparam("max_distance", value=max_distance, type_=Float),
+        )
         .order_by(distance.asc(), Chunk.id.asc())
         .limit(limit)
     )
