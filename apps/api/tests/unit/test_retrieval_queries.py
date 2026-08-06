@@ -19,6 +19,7 @@ from raguard_api.retrieval.queries import (
     build_keyword_query,
     build_semantic_query,
 )
+from sqlalchemy import Float
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.elements import BindParameter
 from sqlalchemy.sql.visitors import iterate
@@ -26,6 +27,7 @@ from sqlalchemy.sql.visitors import iterate
 pytestmark = pytest.mark.unit
 
 LIMIT = 50
+MAX_DISTANCE = 0.5
 TENANT_ID = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 
 
@@ -101,7 +103,9 @@ def test_keyword_query_limits_candidates():
 
 
 def test_semantic_query_binds_halfvec_1536_embedding():
-    statement = build_semantic_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT)
+    statement = build_semantic_query(
+        tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+    )
     sql = _compiled(statement)
 
     assert "<=>" in sql
@@ -112,7 +116,9 @@ def test_semantic_query_binds_halfvec_1536_embedding():
 
 
 def test_semantic_query_applies_tenant_predicate_before_ranking():
-    statement = build_semantic_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT)
+    statement = build_semantic_query(
+        tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+    )
     sql = _compiled(statement)
 
     where_pos = sql.index("WHERE")
@@ -123,22 +129,62 @@ def test_semantic_query_applies_tenant_predicate_before_ranking():
 
 
 def test_semantic_query_joins_documents_by_tenant_and_document_keys():
-    sql = _compiled(build_semantic_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT))
+    sql = _compiled(
+        build_semantic_query(
+            tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+        )
+    )
 
     assert "documents.tenant_id = chunks.tenant_id" in sql
     assert "documents.id = chunks.document_id" in sql
 
 
 def test_semantic_query_orders_by_distance_asc_then_chunk_id_asc():
-    sql = _compiled(build_semantic_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT))
+    sql = _compiled(
+        build_semantic_query(
+            tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+        )
+    )
 
     assert "ORDER BY distance ASC, chunks.id ASC" in sql
 
 
 def test_semantic_query_limits_candidates():
-    statement = build_semantic_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT)
+    statement = build_semantic_query(
+        tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+    )
 
     assert statement._limit == LIMIT
+
+
+def test_semantic_query_filters_by_max_distance_before_ordering():
+    """Semantic candidates must be real matches within the relevance threshold.
+
+    Without a distance predicate the signal ranks every authorized tenant
+    chunk as the nearest neighbor, so a populated tenant with no keyword match
+    would never return the neutral empty result required by the spec.
+    """
+    statement = build_semantic_query(
+        tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+    )
+    sql = _compiled(statement)
+
+    assert "<= %(max_distance)s" in sql
+    assert sql.index("<= %(max_distance)s") < sql.index("ORDER BY")
+
+
+def test_semantic_query_max_distance_is_bound_and_applied_after_tenant_predicate():
+    statement = build_semantic_query(
+        tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+    )
+    sql = _compiled(statement)
+
+    # The threshold is a bound parameter, never a literal in the SQL text.
+    assert str(MAX_DISTANCE) not in sql
+    assert sql.index("chunks.tenant_id") < sql.index("<= %(max_distance)s")
+    max_distance_bind = _bindparam(statement, "max_distance")
+    assert isinstance(max_distance_bind.type, Float)
+    assert max_distance_bind.value == MAX_DISTANCE
 
 
 def test_ef_search_statement_is_parameterized():

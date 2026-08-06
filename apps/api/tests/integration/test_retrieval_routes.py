@@ -9,6 +9,8 @@ identical neutral ``{"results": []}``; and an embedding-provider failure
 returns 503 with no partial results. No provider network call is ever made.
 """
 
+import hashlib
+import math
 import uuid
 
 import pytest
@@ -16,7 +18,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from raguard_api.auth.jwt import create_access_token
 from raguard_api.config import Settings, get_settings
-from raguard_api.documents.contracts import FakeEmbedder
+from raguard_api.documents.contracts import EMBEDDING_DIMENSION, FakeEmbedder
 from raguard_api.documents.models import Chunk, Document
 from raguard_api.errors import register_error_handlers
 from raguard_api.identity.models import Membership, Role, Tenant, User
@@ -38,13 +40,34 @@ RESULT_FIELDS = {
 }
 
 
-def _embedding(text: str) -> list[float]:
-    return FakeEmbedder().embed([text])[0]
+def _embedding(text: str, embedder=None) -> list[float]:
+    embedder = embedder if embedder is not None else FakeEmbedder()
+    return embedder.embed([text])[0]
 
 
 class _FailingEmbedder:
     def embed(self, texts):
         raise RuntimeError("openai unreachable")
+
+
+class _ContentEmbedder:
+    """Deterministic content-based fake: each token owns one unit axis, so a
+    query sharing no token with a chunk lands at cosine distance 1.0 (orthogonal)
+    while a shared token lands well inside the default 0.5 distance cutoff."""
+
+    def embed(self, texts):
+        vectors = []
+        for text in texts:
+            axes = {}
+            for token in text.lower().split():
+                axis = int.from_bytes(hashlib.md5(token.encode()).digest()[:4], "big") % 1536
+                axes[axis] = 1.0
+            norm = math.sqrt(len(axes)) if axes else 1.0
+            vector = [0.0] * EMBEDDING_DIMENSION
+            for axis in axes:
+                vector[axis] = 1.0 / norm
+            vectors.append(vector)
+        return vectors
 
 
 def _make_app(db, *, embedder=None):
@@ -63,12 +86,12 @@ def _make_app(db, *, embedder=None):
     return app, settings
 
 
-async def _seed(db, *, a_chunks: bool = True):
+async def _seed(db, *, a_chunks: bool = True, embedder=None, email_tag: str = "a"):
     """Tenant A admin (all caps) + member (no chat.use); tenant B carol (chat.use)."""
     async with db.session_factory() as session:
-        admin = User(email="admin-a@example.com", password_hash="x")
-        member = User(email="member-a@example.com", password_hash="x")
-        carol = User(email="carol-b@example.com", password_hash="x")
+        admin = User(email=f"admin-{email_tag}@example.com", password_hash="x")
+        member = User(email=f"member-{email_tag}@example.com", password_hash="x")
+        carol = User(email=f"carol-{email_tag}@example.com", password_hash="x")
         tenant_a = Tenant(name="Tenant A")
         tenant_b = Tenant(name="Tenant B")
         session.add_all([admin, member, carol, tenant_a, tenant_b])
@@ -102,7 +125,7 @@ async def _seed(db, *, a_chunks: bool = True):
                 document_id=doc_b.id,
                 position=0,
                 content="omega notes final",
-                embedding=_embedding("omega notes final"),
+                embedding=_embedding("omega notes final", embedder),
             ),
         ]
         if a_chunks:
@@ -112,14 +135,14 @@ async def _seed(db, *, a_chunks: bool = True):
                     document_id=doc_a.id,
                     position=0,
                     content="alpha beta gamma",
-                    embedding=_embedding("alpha beta gamma"),
+                    embedding=_embedding("alpha beta gamma", embedder),
                 ),
                 Chunk(
                     tenant_id=tenant_a.id,
                     document_id=doc_a.id,
                     position=1,
                     content="delta epsilon zeta",
-                    embedding=_embedding("delta epsilon zeta"),
+                    embedding=_embedding("delta epsilon zeta", embedder),
                 ),
             ]
         session.add_all(chunks)
@@ -223,6 +246,41 @@ async def test_no_match_and_empty_corpus_return_identical_neutral_empty(migrated
         empty = await client.post("/api/search", json={"query": "alpha"}, headers=_cookie(token))
     assert no_match.status_code == empty.status_code == 200
     assert no_match.json() == empty.json() == {"results": []}  # neutral, nothing disclosed
+
+
+async def test_populated_no_match_returns_same_neutral_empty_as_empty_corpus(migrated_db):
+    """Spec "No-match and empty corpus are identical" for a populated tenant.
+
+    The no-match case above disables all authorized chunks, so it cannot catch
+    a semantic signal that returns nearest-neighbor chunks without a relevance
+    threshold. Here tenant A owns chunks; the content-based fake keeps a
+    matching query inside the distance cutoff (positive control) while a query
+    sharing no keyword and no token axis stays outside it, so the populated
+    no-match response must equal the empty-corpus neutral empty result.
+    """
+    embedder = _ContentEmbedder()
+    ids = await _seed(migrated_db, embedder=embedder)
+    app, settings = _make_app(migrated_db, embedder=embedder)
+    token = _token(settings, user_id=ids["admin"], tenant_id=ids["tenant_a"])
+    async with _client(app) as client:
+        match = await client.post("/api/search", json={"query": "alpha"}, headers=_cookie(token))
+        populated_no_match = await client.post(
+            "/api/search", json={"query": "omega"}, headers=_cookie(token)
+        )
+    assert match.status_code == 200
+    assert len(match.json()["results"]) >= 1  # the semantic signal still matches real hits
+    assert populated_no_match.status_code == 200
+    assert populated_no_match.json() == {"results": []}
+
+    ids_empty = await _seed(migrated_db, a_chunks=False, embedder=embedder, email_tag="c")
+    token = _token(settings, user_id=ids_empty["admin"], tenant_id=ids_empty["tenant_a"])
+    async with _client(app) as client:
+        empty_corpus = await client.post(
+            "/api/search", json={"query": "alpha"}, headers=_cookie(token)
+        )
+    assert empty_corpus.status_code == 200
+    assert empty_corpus.json() == {"results": []}
+    assert populated_no_match.json() == empty_corpus.json()  # identical neutral response
 
 
 async def test_provider_failure_returns_503_without_partial_results(migrated_db):

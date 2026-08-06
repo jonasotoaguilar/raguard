@@ -71,7 +71,9 @@ async def test_real_provider_embedding_is_1536_dims_and_binds_to_halfvec(migrate
     scope = AuthorizationScope(
         tenant_id=tenant_id, user_id=uuid.uuid4(), capabilities=frozenset({"chat.use"})
     )
-    statement = build_semantic_query(tenant_predicate=scope.tenant_predicate, limit=5)
+    statement = build_semantic_query(
+        tenant_predicate=scope.tenant_predicate, limit=5, max_distance=0.5
+    )
     async with migrated_db.session_factory() as session:
         rows = (await session.execute(statement, {"embedding": vector})).all()
     assert [row.chunk_id for row in rows] == [chunk_id]
