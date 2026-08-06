@@ -82,7 +82,9 @@ jobs:
       POSTGRES_DB: raguard
     services:
       postgres:
-        image: postgres:17
+        # pgvector build so migration 0002's `CREATE EXTENSION vector` plus
+        # halfvec/HNSW indexes resolve; matches infra/compose.yaml image.
+        image: pgvector/pgvector:0.8.6-pg17
         env:
           POSTGRES_USER: raguard
           POSTGRES_PASSWORD: change-me
