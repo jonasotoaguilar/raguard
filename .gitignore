@@ -1,0 +1,50 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Node / pnpm
+node_modules/
+dist/
+*.tsbuildinfo
+apps/web/src/routeTree.gen.ts
+
+# Lefthook local overrides
+.lefthook-local.yml
+
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage/
+htmlcov/
+*.egg-info/
+
+# Test artifacts
+playwright-report/
+test-results/
+
+# Docker / infra local state
+infra/caddy/data/
+infra/caddy/config/
+# Local AI runtime state
+.atl/
+.agents
+.claude

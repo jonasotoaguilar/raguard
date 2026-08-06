@@ -1,0 +1,29 @@
+[tool.uv.workspace]
+members = ["apps/api", "apps/worker"]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.27,<0.29",
+    "pytest>=8.3,<10",
+    "pytest-asyncio>=0.24,<2",
+    "ruff==0.16.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = [".agents", ".atl", ".claude", "docs", "README.md", "PRD.md", "ARCHITECTURE.md", "DESIGN.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["apps/api/tests", "apps/worker/tests"]
+addopts = "-m 'not e2e'"
+pythonpath = ["apps/api/src", "apps/worker/src"]
+asyncio_mode = "auto"
+markers = [
+    "unit: fast, isolated tests with no external services",
+    "integration: tests against local services (PostgreSQL, Redis, MinIO)",
+    "e2e: full-stack tests requiring the whole compose stack",
+]

@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  js:
+    name: JS (pnpm workspace)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.1.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint and format check
+        run: pnpm exec biome check .
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Collect coverage
+        run: |
+          if pnpm --filter @raguard/web exec node -e "require.resolve('@vitest/coverage-v8')" > /dev/null 2>&1; then
+            pnpm --filter @raguard/web exec vitest run --coverage --passWithNoTests
+          else
+            echo "::warning::Coverage skipped: @vitest/coverage-v8 is not installed. Add it to @raguard/web devDependencies to enable coverage."
+          fi
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-js
+          path: coverage/
+          if-no-files-found: ignore
+
+  infra:
+    name: Infra gates (compose config)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate compose stack (env-file placeholders)
+        run: docker compose --env-file .env.example -f infra/compose.yaml config -q
+
+  python:
+    name: Python (uv workspace)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Matches infra/compose.yaml credentials; conftest creates disposable
+      # migrated databases per test from these values (PR 4 integration gate).
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: '55432'
+      POSTGRES_USER: raguard
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: raguard
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: raguard
+          POSTGRES_PASSWORD: change-me
+          POSTGRES_DB: raguard
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U raguard -d raguard"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      # Required by the worker startup gate below (declared runtime command).
+      redis:
+        image: redis:8.10.0-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'uv.lock'
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint and format check
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Run tests (unit + integration gate on PostgreSQL 17)
+        run: |
+          if find apps -name 'test_*.py' -o -name '*_test.py' | grep -q .; then
+            uv run pytest -m "not e2e"
+          else
+            echo "No Python test files found yet; skipping test run."
+          fi
+
+      - name: Worker startup gate (declared runtime command, --burst)
+        env:
+          REDIS_URL: redis://redis:6379/0
+          DATABASE_URL: postgresql+psycopg://raguard:change-me@127.0.0.1:55432/raguard
+        run: uv run arq raguard_worker.settings.WorkerSettings --burst
+
+      - name: Collect coverage
+        run: |
+          if find apps -name 'test_*.py' -o -name '*_test.py' | grep -q .; then
+            if uv run python -c "import pytest_cov" > /dev/null 2>&1; then
+              uv run pytest -m "not e2e" --cov=apps --cov-report=xml:coverage.xml
+            else
+              echo "::warning::Coverage skipped: pytest-cov is not installed. Add it to the dev dependency group to enable coverage."
+            fi
+          else
+            echo "No Python test files found yet; coverage not collected."
+          fi
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-python
+          path: coverage.xml
+          if-no-files-found: ignore

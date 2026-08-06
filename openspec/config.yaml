@@ -1,0 +1,51 @@
+schema: spec-driven
+
+context: |
+  Monorepo raguard: pnpm workspace (apps/web: React 19 + Vite 8, TanStack Router/Query, TS 7) + uv workspace (apps/api: FastAPI/SQLAlchemy 2 async/psycopg3; apps/worker: arq/Redis), Python 3.13.
+  Infra: PostgreSQL 17 + pgvector, Redis, S3/MinIO, Caddy proxy, Docker Compose local stack; GitHub Actions CI (biome, ruff, pytest, vitest, Playwright).
+  Architecture: modular monolith API + async worker (ADR-0001..0006); PRD invariants: retrieval-level tenant/role authorization and citations resolving to user-accessible chunks; document content is untrusted data.
+  Source of truth: PRD.md (product), ARCHITECTURE.md (system), DESIGN.md (UI), docs/adr/. Quality: ruff (E,F,I,UP,B, 100 cols) + biome (recommended), lefthook hooks, conventional commits, English artifacts.
+  Repository is at bootstrap stage: config and empty test suites only; no application source or tests exist yet (branch chore/setup-project, uncommitted).
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - PRD invariants (authorization, citation verifiability) MUST appear as testable scenarios in affected domains
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+    - Reference docs/adr/ADR-0001..0006 as the architecture source of truth
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+  apply:
+    guidelines:
+      - Follow existing code patterns
+    tdd: true
+    test_command: "uv run pytest -m 'not e2e' && pnpm test"
+  verify:
+    test_command: "uv run pytest -m 'not e2e' && pnpm test"
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
+
+testing:
+  strict_tdd: true
+  runners:
+    python: "uv run pytest -m 'not e2e'"
+    js: "pnpm test"
+  layers:
+    unit: pytest marker `unit` (apps/*/tests/unit); vitest + @testing-library/react (jsdom)
+    integration: pytest marker `integration` + httpx (apps/*/tests/integration, against local compose services)
+    e2e: pytest marker `e2e` (full compose stack); Playwright chromium (apps/web/e2e)
+  coverage:
+    python: "uv run pytest -m 'not e2e' --cov=apps --cov-report=xml:coverage.xml" (pytest-cov not installed yet; CI warns and skips)
+    js: "pnpm --filter @raguard/web exec vitest run --coverage" (@vitest/coverage-v8 not installed yet; CI warns and skips)
+  quality:
+    linter: ruff check (py), biome check (js/ts)
+    type_checker: tsc via TypeScript 7 (web); mypy not configured for Python
+    formatter: ruff format (py), biome check --write (js/ts)
