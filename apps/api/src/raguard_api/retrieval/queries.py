@@ -24,12 +24,11 @@ TenantPredicate = Callable[[ColumnElement], ColumnElement[bool]]
 
 
 def build_keyword_query(*, tenant_predicate: TenantPredicate, limit: int) -> Select:
-    """Tenant-filtered FTS query: ts_rank desc, chunk id asc, bounded candidates."""
+    """Tenant-filtered FTS query: real tsquery matches only, ranked desc, chunk id asc."""
     query = bindparam("query", type_=String)
     # The FTS config is a fixed code-level constant; only the query text binds.
-    rank = func.ts_rank(
-        Chunk.search_vector, func.plainto_tsquery(text(f"'{_FTS_CONFIG}'"), query)
-    ).label("rank")
+    tsquery = func.plainto_tsquery(text(f"'{_FTS_CONFIG}'"), query)
+    rank = func.ts_rank(Chunk.search_vector, tsquery).label("rank")
     return (
         select(
             Chunk.id.label("chunk_id"),
@@ -43,7 +42,10 @@ def build_keyword_query(*, tenant_predicate: TenantPredicate, limit: int) -> Sel
             Document,
             and_(Document.tenant_id == Chunk.tenant_id, Document.id == Chunk.document_id),
         )
-        .where(tenant_predicate(Chunk.tenant_id))
+        .where(
+            tenant_predicate(Chunk.tenant_id),
+            Chunk.search_vector.op("@@", is_comparison=True)(tsquery),
+        )
         .order_by(rank.desc(), Chunk.id.asc())
         .limit(limit)
     )
