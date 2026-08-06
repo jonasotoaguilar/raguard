@@ -5,7 +5,7 @@ context: |
   Infra: PostgreSQL 17 + pgvector, Redis, S3/MinIO, Caddy proxy, Docker Compose local stack; GitHub Actions CI (biome, ruff, pytest, vitest, Playwright).
   Architecture: modular monolith API + async worker (ADR-0001..0006); PRD invariants: retrieval-level tenant/role authorization and citations resolving to user-accessible chunks; document content is untrusted data.
   Source of truth: PRD.md (product), ARCHITECTURE.md (system), DESIGN.md (UI), docs/adr/. Quality: ruff (E,F,I,UP,B, 100 cols) + biome (recommended), lefthook hooks, conventional commits, English artifacts.
-  Repository is at bootstrap stage: config and empty test suites only; no application source or tests exist yet (branch chore/setup-project, uncommitted).
+  Current state: main branch, in sync with origin/main; three completed SDD changes archived (mvp-authz-foundation: tenant identity, JWT authentication, org-scoped RBAC; mvp-document-ingestion: document ingestion API + async worker; mvp-retrieval-rrf: hybrid FTS + pgvector retrieval with RRF, merged via PR #11). 33 Python test files across apps/api + apps/worker (18 unit, 14 integration, 1 e2e; pytest markers unit/integration/e2e); web tooling ready (vitest, Playwright configured) with zero JS tests yet. openspec/specs/ holds 5 main specs (tenant-identity, jwt-authentication, authorization-rbac, documents, retrieval); openspec/changes/archive/ holds the 3 completed changes.
 
 rules:
   proposal:
@@ -43,8 +43,8 @@ testing:
     integration: pytest marker `integration` + httpx (apps/*/tests/integration, against local compose services)
     e2e: pytest marker `e2e` (full compose stack); Playwright chromium (apps/web/e2e)
   coverage:
-    python: "uv run pytest -m 'not e2e' --cov=apps --cov-report=xml:coverage.xml" (pytest-cov not installed yet; CI warns and skips)
-    js: "pnpm --filter @raguard/web exec vitest run --coverage" (@vitest/coverage-v8 not installed yet; CI warns and skips)
+    python: "uv run pytest -m 'not e2e' --cov=apps --cov-report=xml:coverage.xml (pytest-cov not installed yet; CI warns and skips)"
+    js: "pnpm --filter @raguard/web exec vitest run --coverage (@vitest/coverage-v8 not installed yet; CI warns and skips)"
   quality:
     linter: ruff check (py), biome check (js/ts)
     type_checker: tsc via TypeScript 7 (web); mypy not configured for Python
