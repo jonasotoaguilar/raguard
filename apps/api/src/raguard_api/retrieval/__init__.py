@@ -18,6 +18,7 @@ from raguard_api.retrieval.queries import (
     build_keyword_query,
     build_semantic_query,
 )
+from raguard_api.retrieval.service import retrieve_chunks
 
 __all__ = [
     "Candidate",
@@ -26,4 +27,5 @@ __all__ = [
     "build_keyword_query",
     "build_semantic_query",
     "build_ef_search_statement",
+    "retrieve_chunks",
 ]
