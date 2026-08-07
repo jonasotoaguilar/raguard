@@ -16,6 +16,22 @@ from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
+def validate_chat_bounds(
+    *, model: str, max_output_tokens: int, retries: int, timeout_seconds: float
+) -> None:
+    """Startup guard: chat provider settings must satisfy the design bounds (task 3.2)."""
+    if not model.strip():
+        raise ValueError("chat_model must not be blank")
+    if not 1 <= max_output_tokens <= 2000:
+        raise ValueError(
+            f"chat_max_output_tokens out of bounds: {max_output_tokens}; require 1..2000"
+        )
+    if not 0 <= retries <= 2:
+        raise ValueError(f"chat_retries out of bounds: {retries}; require 0..2")
+    if not timeout_seconds > 0:
+        raise ValueError(f"provider_timeout_seconds out of bounds: {timeout_seconds}; require > 0")
+
+
 def validate_retrieval_bounds(
     *,
     rrf_k: int,
@@ -90,9 +106,23 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     provider_timeout_seconds: float = 30.0
 
+    # --- Chat completion defaults/bounds (design: gpt-4o-mini, max 500 output
+    # tokens, at most 2 application retries; the completer disables SDK retries
+    # and reuses provider_timeout_seconds). Failures surface as typed errors
+    # for the router's safe 503 envelope. ---
+    chat_model: str = "gpt-4o-mini"
+    chat_max_output_tokens: int = 500
+    chat_retries: int = 2
+
     model_config = {"extra": "ignore"}
 
     def model_post_init(self, __context: Any) -> None:
+        validate_chat_bounds(
+            model=self.chat_model,
+            max_output_tokens=self.chat_max_output_tokens,
+            retries=self.chat_retries,
+            timeout_seconds=self.provider_timeout_seconds,
+        )
         validate_retrieval_bounds(
             rrf_k=self.rrf_k,
             candidates=self.retrieval_candidates,
