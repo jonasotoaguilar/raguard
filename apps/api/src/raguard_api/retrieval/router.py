@@ -1,14 +1,14 @@
-"""Tenant-scoped hybrid search route (task 2.2).
+"""Tenant-scoped hybrid search route (task 2.2, PR 1 extraction).
 
-``POST /api/search`` embeds the trimmed query once, then runs the keyword and
-semantic signals concurrently in independent sessions, fuses candidates with
-RRF, and returns at most ``top_k`` deterministic results. Any embedding or
+``POST /api/search`` validates the bounded request, resolves a fresh
+``AuthorizationScope``, and delegates retrieval to the shared
+``retrieve_chunks`` service (embedding, tenant-predicated keyword/semantic
+signals, RRF fusion, top-k bound). The route keeps validation, the ``chat.use``
+gate, the generic 503 envelope, and the response mapping. Any embedding or
 query failure maps to the generic 503 envelope — partial candidates are never
-returned. The tenant predicate comes from a fresh ``AuthorizationScope``, so
-no cross-tenant chunk can ever be ranked or disclosed.
+returned, and no cross-tenant chunk can ever be ranked or disclosed.
 """
 
-import asyncio
 import logging
 from typing import Annotated
 
@@ -25,13 +25,8 @@ from raguard_api.authorization.scope import AuthorizationScope
 from raguard_api.config import Settings
 from raguard_api.documents.contracts import Embedder
 from raguard_api.errors import AuthorizationError, ServiceUnavailableError
-from raguard_api.retrieval.contracts import Candidate, FusedResult
-from raguard_api.retrieval.fusion import rrf_fusion
-from raguard_api.retrieval.queries import (
-    build_ef_search_statement,
-    build_keyword_query,
-    build_semantic_query,
-)
+from raguard_api.retrieval.contracts import FusedResult
+from raguard_api.retrieval.service import retrieve_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -78,21 +73,14 @@ def create_retrieval_router(
         scope: Annotated[AuthorizationScope, Depends(require_capability(CHAT_USE))],
     ) -> dict:
         try:
-            vectors = await asyncio.to_thread(embedder.embed, [payload.query])
-            keyword, semantic = await asyncio.gather(
-                _keyword_candidates(
-                    session_factory, scope, settings.retrieval_candidates, payload.query
-                ),
-                _semantic_candidates(
-                    session_factory,
-                    scope,
-                    settings.retrieval_candidates,
-                    settings.retrieval_ef_search,
-                    settings.retrieval_semantic_max_distance,
-                    vectors[0],
-                ),
+            results = await retrieve_chunks(
+                session_factory,
+                scope,
+                settings,
+                embedder,
+                payload.query,
+                top_k=payload.top_k,
             )
-            fused = rrf_fusion(keyword, semantic, k=settings.rrf_k)
         except Exception as exc:
             logger.warning(
                 "search failed tenant_id=%s exception=%s",
@@ -100,48 +88,9 @@ def create_retrieval_router(
                 type(exc).__name__,
             )
             raise ServiceUnavailableError("Search unavailable") from exc
-        return {"results": [_result(result) for result in fused[: payload.top_k]]}
+        return {"results": [_result(result) for result in results]}
 
     return router
-
-
-async def _keyword_candidates(
-    session_factory: async_sessionmaker[AsyncSession],
-    scope: AuthorizationScope,
-    limit: int,
-    query: str,
-) -> list[Candidate]:
-    statement = build_keyword_query(tenant_predicate=scope.tenant_predicate, limit=limit)
-    async with session_factory() as session:
-        rows = (await session.execute(statement, {"query": query})).all()
-    return [_candidate(row) for row in rows]
-
-
-async def _semantic_candidates(
-    session_factory: async_sessionmaker[AsyncSession],
-    scope: AuthorizationScope,
-    limit: int,
-    ef_search: int,
-    max_distance: float,
-    embedding: list[float],
-) -> list[Candidate]:
-    statement = build_semantic_query(
-        tenant_predicate=scope.tenant_predicate, limit=limit, max_distance=max_distance
-    )
-    async with session_factory() as session:
-        await session.execute(build_ef_search_statement(ef_search=ef_search))
-        rows = (await session.execute(statement, {"embedding": embedding})).all()
-    return [_candidate(row) for row in rows]
-
-
-def _candidate(row) -> Candidate:
-    return Candidate(
-        chunk_id=row.chunk_id,
-        document_id=row.document_id,
-        document_name=row.document_name,
-        position=row.position,
-        content=row.content,
-    )
 
 
 def _result(result: FusedResult) -> dict:
