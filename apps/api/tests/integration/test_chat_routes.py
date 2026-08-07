@@ -9,6 +9,10 @@ retrieval or completion; missing/invalid tokens yield 401 and a missing
 (fresh resolution); empty corpus and populated no-match return the
 byte-identical neutral ``{answer: null, citations: []}`` with zero completer
 calls. No provider network call is ever made.
+
+PR4b failure gates (route-level): a typed provider failure and an out-of-set
+citation marker both map to the generic 503 envelope with no partial answer or
+citations and no internal detail leak.
 """
 
 import hashlib
@@ -21,6 +25,7 @@ from httpx import ASGITransport, AsyncClient
 from raguard_api.auth.jwt import create_access_token
 from raguard_api.chat.contracts import FakeCompleter
 from raguard_api.chat.prompts import SYSTEM_PROMPT, UNTRUSTED_SOURCES_END, UNTRUSTED_SOURCES_START
+from raguard_api.chat.providers import CompletionError
 from raguard_api.chat.router import create_chat_router
 from raguard_api.config import Settings, get_settings
 from raguard_api.documents.contracts import EMBEDDING_DIMENSION, FakeEmbedder
@@ -58,6 +63,18 @@ class _ContentEmbedder:
                 vector[axis] = 1.0 / norm
             vectors.append(vector)
         return vectors
+
+
+class _FailureCompleter:
+    """Completer that raises a typed provider failure when invoked."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+        self.calls = []
+
+    def complete(self, prompt):
+        self.calls.append(prompt)
+        raise self.exc
 
 
 def _make_app(db, *, embedder=None, completer=None):
@@ -262,3 +279,49 @@ async def test_empty_corpus_and_populated_no_match_return_byte_identical_neutral
     assert empty_corpus.json() == neutral
     assert populated_no_match.json() == empty_corpus.json()  # byte-identical
     assert len(completer.calls) == 1  # both no-evidence requests made zero calls
+
+
+async def test_provider_failure_returns_safe_503_with_no_partial_answer(migrated_db):
+    """PR4b: typed provider failure at the HTTP boundary -> generic safe 503.
+
+    The completion is reached (retrieval ran, one attempt) but its typed
+    failure maps to the generic envelope: no partial answer, no citations, no
+    provider detail leak, no fallback.
+    """
+    ids = await _seed(migrated_db)
+    completer = _FailureCompleter(CompletionError("internal provider detail"))
+    app, settings, _ = _make_app(migrated_db, completer=completer)
+    token = _token(settings, user_id=ids["admin"], tenant_id=ids["tenant"])
+    async with _client(app) as client:
+        response = await client.post("/api/chat", json={"query": "alpha"}, headers=_cookie(token))
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {"code": "service_unavailable", "message": "Chat unavailable"}
+    }
+    assert "answer" not in response.json()  # no partial answer
+    assert "citations" not in response.json()  # no partial citations
+    assert "internal provider detail" not in response.text  # no detail leak
+    assert len(completer.calls) == 1  # provider was reached; no fallback ran
+
+
+async def test_out_of_set_citation_returns_safe_503_with_no_partial_answer(migrated_db):
+    """PR4b: an out-of-set citation marker at the HTTP boundary -> safe 503.
+
+    Exactly one authorized chunk is retrieved and the completion cites [9];
+    verification rejects the whole response: same generic envelope, nothing
+    partial rendered.
+    """
+    ids = await _seed(migrated_db)
+    completer = FakeCompleter("Claims [9].")
+    app, settings, _ = _make_app(migrated_db, completer=completer)
+    token = _token(settings, user_id=ids["admin"], tenant_id=ids["tenant"])
+    async with _client(app) as client:
+        response = await client.post("/api/chat", json={"query": "alpha"}, headers=_cookie(token))
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {"code": "service_unavailable", "message": "Chat unavailable"}
+    }
+    assert "answer" not in response.json()
+    assert "citations" not in response.json()
+    assert len(completer.calls) == 1  # completion ran; verification rejected it whole
+    assert "alpha beta gamma" in completer.calls[0].user_prompt  # one chunk retrieved
