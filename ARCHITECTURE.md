@@ -1,8 +1,8 @@
 # ARCHITECTURE.md
 
-> **Status**: Draft — target design; setup phase: local infrastructure configured, application services planned &nbsp;|&nbsp; **Last updated**: 2026-08-04 &nbsp;|&nbsp; **Author**: Jonathan Soto (jonasotoaguilar)
+> **Status**: Ready — reflects `mvp-chat-citations` delivered on `main` at `707245a` (2026-08-24); target architecture preserved, open decisions retained &nbsp;|&nbsp; **Last updated**: 2026-08-24 &nbsp;|&nbsp; **Author**: Jonathan Soto (jonasotoaguilar)
 
-This document is the target architecture for raguard as specified by [PRD.md](./PRD.md). At the setup phase the local infrastructure (PostgreSQL + pgvector, Redis, MinIO, Caddy) exists in `infra/compose.yaml`; the application services (API, worker, web) and the behaviors they implement remain planned. Where the PRD leaves a product decision open, this document says so explicitly (see [Open Decisions](#open-decisions)) instead of inventing settled behavior.
+This document is the target architecture for raguard as specified by [PRD.md](./PRD.md). At `707245a` the local infrastructure (PostgreSQL + pgvector, Redis, MinIO, Caddy) in `infra/compose.yaml` and the application services for identity/authentication/RBAC (`apps/api/src/raguard_api/auth/`, `authorization/`, `identity/`), document ingestion (`apps/api/src/raguard_api/documents/` + `apps/worker/src/raguard_worker/` — `POST /api/documents`, Arq worker, parsing/chunking/embeddings/indexing), permission-filtered hybrid retrieval (`apps/api/src/raguard_api/retrieval/` — `POST /api/search`, FTS + vector + RRF), and bounded chat with citation verification (`apps/api/src/raguard_api/chat/` — `POST /api/chat`) are implemented and exercised by the non-e2e suite. The offline evaluation harness and the web UI (`apps/web` is still scaffold/tooling only) remain planned — see [Open Decisions](#open-decisions) and PRD §7/§10. Where the PRD leaves a product decision open, this document says so explicitly instead of inventing settled behavior.
 
 ## System Overview **[ALWAYS]**
 
@@ -194,30 +194,30 @@ erDiagram
     }
 ```
 
-> The ERD is the **planned** model. `chunks` carries both the embedding vector and the FTS `tsvector` so both retrieval signals stay physically colocated; `messages.citations` records which chunk ids a message cites (the provenance ledger for citation verifiability). Chat-persistence details (`conversations`/`messages` shape, retention) depend on the open product decision on chat history.
+> The ERD is the **implemented target model**. `tenants`/`users`/`roles`/`memberships`/`documents`/`chunks` are live with migrations `0001_identity_tables` and `0002_documents_chunks` (HNSW `halfvec(1536)` cosine, GIN `tsvector` `simple`); `chunks` carries both the embedding vector and the FTS `tsvector` so both retrieval signals stay colocated. `conversations`/`messages` (and `messages.citations` as the provenance ledger) remain planned — chat persistence, history, and retention are open decisions and no chat write persists today (`POST /api/chat` is request-scoped, `POST /api/search` is stateless).
 
 ## Component Details **[ALWAYS]**
 
 ### Web App (`apps/web`)
 
-- **Technology**: React + Vite, TanStack Router + TanStack Query (TypeScript)
-- **Responsibility**: Chat interface, document management, admin views (users/roles), citation navigation
+- **Technology**: React + Vite, TanStack Router + TanStack Query (TypeScript) — **tooling/scaffold only, no application source yet** (Vite, Vitest, Playwright configured)
+- **Responsibility (planned)**: Chat interface, document management, admin views (users/roles), citation navigation — not yet implemented
 - **Scaling**: Static assets served by Caddy; no server-side state
-- **Dependencies**: API over same-domain `/api`
+- **Dependencies**: API over same-domain `/api` (once implemented)
 - **Failure modes**: API down → empty/error states via TanStack Query; no auth bypass — UI hiding is never an authorization control
 
-### API (`apps/api`)
+### API (`apps/api`) — implemented
 
 - **Technology**: Python 3.13, FastAPI, SQLAlchemy 2 (async) + psycopg3, Pydantic
-- **Responsibility**: JWT auth, org-scoped RBAC, document upload, retrieval + RRF fusion, chat orchestration, citation verification, ingestion job enqueueing
+- **Responsibility (live)**: JWT auth (`POST /api/auth/login`), org-scoped RBAC via the single fresh `AuthorizationResolver`/`AuthorizationScope`, document upload and tenant-scoped list/detail (`POST /api/documents`, `GET /api/documents`), retrieval + RRF fusion (`POST /api/search`, `retrieval/`), chat orchestration and citation verification (`POST /api/chat`, `chat/`), ingestion job enqueueing; app factory wires all routers in `main.py`
 - **Scaling**: Horizontal (stateless; JWT-verified identity per request, no sticky sessions)
-- **Dependencies**: PostgreSQL (source of truth), Redis (queue producer, cache), object storage, provider adapters
-- **Failure modes**: LLM provider down → bounded retries then explicit error, no fallback to ungrounded generation; Redis down → upload/chat-enqueue degraded, retrieval still serves
+- **Dependencies**: PostgreSQL (source of truth), Redis (queue producer, cache), object storage, provider adapters (`OpenAIEmbedder`, `OpenAICompleter`)
+- **Failure modes**: LLM/embedding provider down → bounded retries then safe 503 envelope with no partial results or detail leak, no fallback to ungrounded generation; Redis down → upload/chat-enqueue degraded, retrieval still serves from PostgreSQL
 
-### Worker (`apps/worker`)
+### Worker (`apps/worker`) — implemented
 
 - **Technology**: Python 3.13, Arq worker over Redis
-- **Responsibility**: Ingestion pipeline — download raw file, parse PDF/Markdown, chunk, embed, index chunks, update document status
+- **Responsibility (live)**: Ingestion pipeline — download raw file, parse PDF/Markdown (`parsers.py`), chunk (`chunking.py`), embed (`embeddings.py` via `OpenAIEmbedder`), index chunks atomically and update document status (`jobs.py`, `cleanup.py`); compose service `worker` (`infra/compose.yaml`) runs `uv run arq raguard_worker.settings.WorkerSettings`
 - **Scaling**: Independent horizontal scaling; job lease via Arq (see [ADR-0004](docs/adr/0004-redis-arq-async-jobs.md))
 - **Dependencies**: Redis (queue), object storage, embedding adapter, PostgreSQL
 - **Failure modes**: Embedding provider outage → retry with backoff, document stays `pending`/`failed` with visible status; crash mid-job → at-least-once redelivery, idempotent re-indexing
@@ -243,11 +243,11 @@ erDiagram
 - **Responsibility**: Raw document binaries (tenant-prefixed keys); chunk text lives in PostgreSQL
 - **Failure modes**: Upload failure → document rejected atomically (no orphan DB row); storage outage → new ingestion paused, existing retrieval unaffected
 
-### Provider Adapters
+### Provider Adapters — OpenAI live, Anthropic reserved
 
-- **Technology**: Provider-neutral chat adapter (OpenAI/Anthropic) and replaceable embedding adapter (OpenAI default) ([ADR-0005](docs/adr/0005-provider-neutral-model-adapters.md))
-- **Responsibility**: Isolate external model APIs behind one internal interface; system prompt never merged with untrusted document content
-- **Failure modes**: Rate limits/outages → bounded retries + backoff in API/worker; credentials via env/secret manager, never in code or manifests
+- **Technology**: Provider-neutral chat adapter and replaceable embedding adapter ([ADR-0005](docs/adr/0005-provider-neutral-model-adapters.md)) — **live**: `OpenAIEmbedder` (`retrieval/embeddings.py`) for retrieval and ingestion, `OpenAICompleter` (`chat/providers/openai.py`) for chat (OpenAI-only for MVP, injectable `FakeEmbedder`/`FakeCompleter` in tests); **reserved**: Anthropic chat adapter not yet implemented (Anthropic has no embeddings)
+- **Responsibility**: Isolate external model APIs behind one internal interface; system prompt never merged with untrusted document content; chat prompt assembly lives outside the adapter (`chat/prompts.py`)
+- **Failure modes**: Rate limits/outages → bounded retries + backoff in API/worker (chat: `CHAT_RETRIES` 0..2, disabled SDK retries, `PROVIDER_TIMEOUT_SECONDS`; retrieval: `ServiceUnavailableError` 503); credentials via env/secret manager, never in code or manifests
 
 ### Caddy
 
@@ -379,9 +379,9 @@ Targets marked *draft* come from the PRD and are confirmed once the evaluation h
 
 ## Deployment & Configuration Principles
 
-- **Local topology (setup evidence)**: `infra/compose.yaml` currently provides local infrastructure only — `pgvector/pgvector:0.8.6-pg17` (PostgreSQL `shm_size` 1 GB for pgvector HNSW index builds), `redis:8.10.0-alpine`, `minio/minio:RELEASE.2025-09-07T16-13-09Z` — plus a Caddy proxy gated behind the `proxy` profile. MinIO is local development only: the upstream project is unmaintained (its repository points to AIStor) and the image is pinned to the last verifiable published image; revalidate before any non-local use — S3/R2 are the production targets. The API, worker, and web services remain planned; once implemented, Caddy routes `/` → web and `/api` → API.
+- **Local topology (current evidence at `707245a`)**: `infra/compose.yaml` provides `pgvector/pgvector:0.8.6-pg17` (PostgreSQL `shm_size` 1 GB for pgvector HNSW index builds), `redis:8.10.0-alpine`, `minio/minio:RELEASE.2025-09-07T16-13-09Z`, plus a Caddy proxy gated behind the `proxy` profile and a `worker` service (`apps/worker/Dockerfile` → `uv run arq raguard_worker.settings.WorkerSettings`) with `minio-init` bucket provisioning. MinIO is local development only: the upstream project is unmaintained (its repository points to AIStor) and the image is pinned to the last verifiable published image; revalidate before any non-local use — S3/R2 are the production targets. The API service is not yet a compose service (run via `uv` locally); Caddy routes `/` → web and `/api` → API once those compose services are wired. The web service remains scaffold-only.
 - **Production topology**: same services, with S3 (or R2) instead of MinIO and provider keys from a secret manager; Caddy terminates TLS. No architectural difference — storage and providers are adapter-abstracted ([ADR-0006](docs/adr/0006-s3-compatible-object-storage.md), [ADR-0005](docs/adr/0005-provider-neutral-model-adapters.md)).
-- **Configuration**: environment-based (`.env.example` present at setup; never commit real credentials); versions verified at setup time — lockfiles and pinned images are authoritative.
+- **Configuration**: environment-based (`.env.example` present and lists worker, retrieval, and chat bounds such as `CHUNK_SIZE`, `RRF_K`, `RETRIEVAL_SEMANTIC_MAX_DISTANCE`, `CHAT_MODEL`, `CHAT_RETRIES`; never commit real credentials); versions verified at setup time — lockfiles and pinned images are authoritative.
 - **Secrets**: provider credentials and JWT signing keys in env/secret manager; `.env` gitignored.
 
 ## Key Decisions **[ALWAYS]**
