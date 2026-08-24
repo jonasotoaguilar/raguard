@@ -35,9 +35,9 @@ raguard helps organizations answer questions from their own documents — polici
 - Generic LLM tools cannot be trusted with internal content: they can answer from nothing, and they ignore organizational boundaries.
 - Answers without sources cannot be verified, so reviewers cannot trust them, and mistakes propagate silently.
 
-### Current-State Gap (project)
+### Current-State Gap (project) — reconciled 2026-08-24 at `707245a`
 
-The repository is at bootstrap stage: there is no product, no code, and no evaluation harness yet. The gap this PRD closes is intent and scope: what raguard must do, what it must never do, and how we will know it works.
+`mvp-authz-foundation`, `mvp-document-ingestion`, `mvp-retrieval-rrf`, and `mvp-chat-citations` are delivered on `main` and archived (`openspec/specs/` + `openspec/changes/archive/`). Live on `main`: tenant identity and JWT authentication with org-scoped RBAC via the single fresh `AuthorizationResolver`/`AuthorizationScope`, first-tenant bootstrap via `raguard-bootstrap`, authorized PDF/Markdown upload with tenant-scoped list/detail (`POST /api/documents`, `GET /api/documents`), Redis/Arq ingestion pipeline (parse, chunk, embed, atomic index, failure handling, visible `pending`/`indexed`/`failed` status), permission-filtered hybrid retrieval (`POST /api/search` — FTS `simple` + `halfvec(1536)` cosine, `hnsw.ef_search`, RRF `k=60` at the application layer), and bounded request-scoped chat (`POST /api/chat` — static grounded prompt with untrusted-source delimiters, OpenAI-only completer with bounded timeout/retries/tokens, neutral `{answer: null, citations: []}` on empty/no-match, `[n]` citation verification, safe 503 envelopes). The offline evaluation harness (precision and citation-verifiability measurement), the web UI (`apps/web` remains scaffold only), document deletion, and per-document grants remain open — the next slice is `mvp-evaluation-harness` and is not yet delivered.
 
 ## 3. Target Users & Contexts
 
@@ -59,15 +59,17 @@ The repository is at bootstrap stage: there is no product, no code, and no evalu
 - As an **admin**, I want to assign users roles and document permissions so that retrieval respects organizational boundaries.
 - As a **maintainer**, I want to run an offline evaluation over a labeled question set so that I can measure retrieval precision and answer quality before shipping changes.
 
-### Acceptance Criteria (MVP)
+### Acceptance Criteria (MVP) — current state at `707245a`
 
-- [ ] An organization admin can create a tenant, add users, assign roles, and upload PDF/Markdown documents.
-- [ ] Ingested documents are chunked, embedded, and indexed; ingestion progress and failures are visible.
-- [ ] A user can ask a question and receive an answer grounded in retrieval, with citations linking back to source chunks.
-- [ ] Retrieval combines semantic and keyword signals (RRF fusion); retrieval is scoped by the user's permissions at query time.
-- [ ] Prompt-injection protection: document content cannot alter system or user instructions (tested with adversarial documents).
-- [ ] An evaluation harness runs offline against a labeled set and reports retrieval precision and citation-verifiability metrics.
-- [ ] No cross-tenant or cross-role data leakage is demonstrable in tests.
+- [x] An organization admin can create a tenant, add users, assign roles, and upload PDF/Markdown documents. — first tenant via `raguard-bootstrap` (`BOOTSTRAP_TENANT_NAME`/`BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD`), org administration via `POST /api/auth/login` + `GET/PATCH /api/org/*` (`users.manage`/`org.settings.manage`), authorized upload via `POST /api/documents` (`documents.manage`) — see `apps/api/src/raguard_api/identity/bootstrap.py`, `org/router.py`, `documents/router.py`; tests: `test_bootstrap.py`, `test_org_routes.py`, `test_documents_routes.py`.
+- [x] Ingested documents are chunked, embedded, and indexed; ingestion progress and failures are visible. — `apps/worker/src/raguard_worker/` (parsers, chunking, embeddings, atomic indexing), document status `pending`/`indexed`/`failed` with `failure_reason` allowlist, visible via `GET /api/documents`; tests: `test_documents_routes.py`, `test_documents_models.py`, `test_retrieval_service.py`.
+- [x] A user can ask a question and receive an answer grounded in retrieval, with citations linking back to source chunks. — `POST /api/chat` and `POST /api/search` share `retrieve_chunks` (`retrieval/service.py`); chat verifies `[n]` markers via `chat/citations.py`, returns `answer` + `citations` (`chunk_id`, `document_id`, `document_name`, `position`, `content`); tests: `test_chat_routes.py`, `test_chat_citations.py`, `test_chat_contracts.py`.
+- [x] Retrieval combines semantic and keyword signals (RRF fusion); retrieval is scoped by the user's permissions at query time. — tenant predicate before ranking in both signals (`retrieval/queries.py`, `retrieval/fusion.py` RRF `k=60`), fresh `AuthorizationScope` per request, integration isolation gates; tests: `test_retrieval_service.py`, `test_retrieval_routes.py`, `test_retrieval_isolation.py`.
+- [x] Prompt-injection protection: document content cannot alter system or user instructions (tested with adversarial documents). — static `SYSTEM_PROMPT` free of secrets, chunk content injected only inside `UNTRUSTED_SOURCES_START/END` as JSON, prompt assembly outside the adapter (`chat/prompts.py`), adversarial document gates; tests: `test_chat_prompts.py`, `test_isolation_gates.py`, `test_chat_release_gates.py` (` adversarial `).
+- [ ] An evaluation harness runs offline against a labeled set and reports retrieval precision and citation-verifiability metrics. — **Not delivered**; next slice `mvp-evaluation-harness` (do not claim).
+- [x] No cross-tenant or cross-role data leakage is demonstrable in tests. — retrieval-level authorization invariant enforced at query time + citation verification against the authorized set; release isolation gates across tenants/roles; tests: `test_retrieval_isolation.py`, `test_chat_release_gates.py`, `test_release_gates.py`, `test_isolation_gates.py`.
+
+> E2E provider smoke (`apps/api/tests/e2e/test_retrieval_provider.py`, `test_chat_e2e.py`) is credential-gated and not required for non-e2e verification; web-facing conversation history and document deletion remain planned and are not marked complete here.
 
 ## 5. Invariants (Non-Negotiable)
 
