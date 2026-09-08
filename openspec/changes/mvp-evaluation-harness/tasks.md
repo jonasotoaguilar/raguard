@@ -29,8 +29,8 @@ Slices (stop >400): PR1 313/2; PR2 280–360/3; PR3 250–320/8; PR4 240–300/4
 
 ## Phase 2: Dataset (PR3)
 
-- [ ] 2.1 RED `test_dataset.py`: valid starts; bad schema/dupes/kinds/secrets/oversize → exit 3, no verdict (Valid/Invalid dataset).
-- [ ] 2.2 GREEN `dataset.py`+`errors.py`: `json.loads` only; uuid5; `dataset_sha256` = SHA-256 of `manifest.json`,`corpus.json`,`actors.json`,`cases.jsonl` in that order, each `uint64_be(len(raw))||raw`. REFACTOR.
+- [x] 2.1 RED `test_dataset.py`: valid starts; bad schema/dupes/kinds/secrets/oversize → exit 3, no verdict (Valid/Invalid dataset).
+- [x] 2.2 GREEN `dataset.py`+`errors.py`: `json.loads` only; uuid5; `dataset_sha256` = SHA-256 of `manifest.json`,`corpus.json`,`actors.json`,`cases.jsonl` in that order, each `uint64_be(len(raw))||raw`. REFACTOR.
 
 ## Phase 3: Metrics + report (PR4)
 
