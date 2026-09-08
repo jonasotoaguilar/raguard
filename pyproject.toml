@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["apps/api", "apps/worker"]
+members = ["apps/api", "apps/worker", "apps/eval"]
 
 [dependency-groups]
 dev = [
@@ -18,9 +18,9 @@ extend-exclude = [".agents", ".atl", ".claude", "docs", "README.md", "PRD.md", "
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
-testpaths = ["apps/api/tests", "apps/worker/tests"]
+testpaths = ["apps/api/tests", "apps/worker/tests", "apps/eval/tests"]
 addopts = "-m 'not e2e'"
-pythonpath = ["apps/api/src", "apps/worker/src"]
+pythonpath = ["apps/api/src", "apps/worker/src", "apps/eval/src"]
 asyncio_mode = "auto"
 markers = [
     "unit: fast, isolated tests with no external services",

@@ -5,6 +5,7 @@ requires-python = "==3.13.*"
 [manifest]
 members = [
     "raguard-api",
+    "raguard-eval",
     "raguard-worker",
 ]
 
@@ -683,6 +684,17 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34,<0.53" },
 ]
+
+[[package]]
+name = "raguard-eval"
+version = "0.1.0"
+source = { editable = "apps/eval" }
+dependencies = [
+    { name = "raguard-api" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "raguard-api", editable = "apps/api" }]
 
 [[package]]
 name = "raguard-worker"
