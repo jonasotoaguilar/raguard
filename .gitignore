@@ -48,3 +48,6 @@ infra/caddy/config/
 .atl/
 .agents
 .claude
+
+# Eval reports (generated)
+eval/reports/
