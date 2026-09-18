@@ -34,8 +34,8 @@ Slices (stop >400): PR1 313/2; PR2 280–360/3; PR3 250–320/8; PR4 240–300/4
 
 ## Phase 3: Metrics + report (PR4)
 
-- [ ] 3.1 RED/GREEN `metrics.py`: empty-Rk P=R=0.0; empty Rel excluded; neutral fidelity 1.0; citation null if no `[n]` (Neutral not precision, Missed relevant).
-- [ ] 3.2 RED/GREEN `report.py` case-id order. Allow `schema_version`,`proof_scope`,`dataset_id`,`dataset_sha256`; settings `k`,`rrf_k`,`retrieval_candidates`,`retrieval_ef_search`,`retrieval_semantic_max_distance`; thresholds `draft_precision_at_10`,`fail_under_precision` (null if unset); aggregates;`cases`;`failure_reasons`;`verdict`. Exclude DB URL, JWT/provider secrets/keys/models, actor emails, env.
+- [x] 3.1 RED/GREEN `metrics.py`: empty-Rk P=R=0.0; empty Rel excluded; neutral fidelity 1.0; citation null if no `[n]` (Neutral not precision, Missed relevant).
+- [x] 3.2 RED/GREEN `report.py` case-id order. Allow `schema_version`,`proof_scope`,`dataset_id`,`dataset_sha256`; settings `k`,`rrf_k`,`retrieval_candidates`,`retrieval_ef_search`,`retrieval_semantic_max_distance`; thresholds `draft_precision_at_10`,`fail_under_precision` (null if unset); aggregates;`cases`;`failure_reasons`;`verdict`. Exclude DB URL, JWT/provider secrets/keys/models, actor emails, env.
 
 ## Phase 4: CLI (PR5)
 
