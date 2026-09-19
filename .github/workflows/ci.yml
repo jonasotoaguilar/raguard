@@ -140,6 +140,17 @@ jobs:
           DATABASE_URL: postgresql+psycopg://raguard:change-me@127.0.0.1:55432/raguard
         run: uv run arq raguard_worker.settings.WorkerSettings --burst
 
+      - name: Offline evaluation gate (mvp-v1 fixtures, no precision flag)
+        run: uv run raguard-eval --dataset eval/datasets/mvp-v1 --config eval/config.json --output eval/reports/latest.json
+
+      - name: Upload evaluation report artifact
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: eval-report
+          path: eval/reports/latest.json
+          if-no-files-found: warn
+
       - name: Collect coverage
         run: |
           if find apps -name 'test_*.py' -o -name '*_test.py' | grep -q .; then
