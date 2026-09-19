@@ -47,7 +47,7 @@ Slices (stop >400): PR1 313/2; PR2 280–360/3; PR3 250–320/8; PR4 240–300/4
 
 ## Phase 6: Runner (PR7)
 
-- [ ] 6.1 RED/GREEN `runner.py`: no providers; repeat ranked IDs; per-case embedder/completer counts before work; unauthorized iff after-before >0; denied skips retrieve/prompt/complete; leak → `tenant_leak` exit 2. `system_prompt` byte-equals `SYSTEM_PROMPT`. Outermost `UNTRUSTED_SOURCES_START` then later `UNTRUSTED_SOURCES_END`; all serialized source JSON, including adversarial marker-like text, strictly between them (inner occurrences allowed). Citation membership separate (Offline, Repeat, Capability denial, Structural containment, Invariant hard-fail). Wire script + default evaluator.
+- [x] 6.1 RED/GREEN `runner.py`: no providers; repeat ranked IDs; per-case embedder/completer counts before work; unauthorized iff after-before >0; denied skips retrieve/prompt/complete; leak → `tenant_leak` exit 2. `system_prompt` byte-equals `SYSTEM_PROMPT`. Outermost `UNTRUSTED_SOURCES_START` then later `UNTRUSTED_SOURCES_END`; all serialized source JSON, including adversarial marker-like text, strictly between them (inner occurrences allowed). Citation membership separate (Offline, Repeat, Capability denial, Structural containment, Invariant hard-fail). Wire script + default evaluator. (Done: `958b29d` + `37eeeac` + `43031d1` + `dc4b825`; focused 13+14 green, full non-e2e 452 green.)
 
 ## Phase 7: Fixtures + CI + docs (PR8)
 
