@@ -194,9 +194,17 @@ def test_runner_module_has_no_provider_surface_and_reuses_production_seams() -> 
 
 async def test_evaluation_is_offline_and_repeat_identical(tmp_path: Path) -> None:
     dataset_dir = _write_dataset(tmp_path / "dataset")
+    modules_before = set(sys.modules)
     first = await _run_or_skip(dataset_dir, k=10)
     second = await _run_or_skip(dataset_dir, k=10)
-    assert "openai" not in sys.modules
+    introduced = {
+        name
+        for name in set(sys.modules) - modules_before
+        if name == "openai" or name.startswith("openai.")
+    }
+    assert introduced == set()
+    runner_source = Path(runner_module.__file__).read_text(encoding="utf-8").lower()
+    assert "openai" not in runner_source
     assert _ranked_ids(first) == _ranked_ids(second)
     assert first["verdict"] == second["verdict"] == "pass"
     assert first["failure_reasons"] == second["failure_reasons"] == []
