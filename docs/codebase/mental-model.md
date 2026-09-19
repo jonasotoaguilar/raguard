@@ -4,7 +4,7 @@ Detailed mental model for raguard's monorepo. Keep [CODEBASE-GUIDE](../CODEBASE-
 
 ## What this project is
 
-raguard is a self-hosted, multi-tenant conversational RAG over internal PDF and Markdown documents. Organizations upload documents; the system chunks, embeds, and indexes them in PostgreSQL + pgvector; employees ask questions in natural language and receive answers grounded in retrieval, filtered by their permissions, with `[n]`-verified citations to the exact chunks they may access. The offline precision evaluation harness that gates retrieval/citation quality is the next slice and is not yet delivered.
+raguard is a self-hosted, multi-tenant conversational RAG over internal PDF and Markdown documents. Organizations upload documents; the system chunks, embeds, and indexes them in PostgreSQL + pgvector; employees ask questions in natural language and receive answers grounded in retrieval, filtered by their permissions, with `[n]`-verified citations to the exact chunks they may access. The offline precision evaluation harness gates retrieval/citation quality: versioned `mvp-v1` fixtures (`eval/datasets/mvp-v1/`) plus `eval/config.json` run via `uv run raguard-eval --dataset eval/datasets/mvp-v1 --config eval/config.json --output eval/reports/latest.json`, writing a deterministic sorted-keys JSON report (exits 0 pass, 2 invariant, 3 dataset/config error, 1 internal) against an isolated disposable PostgreSQL database; the CI python job runs this gate without `--fail-under-precision` and uploads the report as an artifact.
 
 ## What this project is not
 
