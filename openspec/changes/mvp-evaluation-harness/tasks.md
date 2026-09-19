@@ -39,11 +39,11 @@ Slices (stop >400): PR1 313/2; PR2 280–360/3; PR3 250–320/8; PR4 240–300/4
 
 ## Phase 4: CLI (PR5)
 
-- [ ] 4.1 RED/GREEN `cli.py`+`__main__.py`: injectable `main(argv, evaluator=...)`; no `[project.scripts]`. No `--live`; `--fail-under-precision` opt-in; exits 0/2/3/1 (Pass report, Distinct exits, Precision gate, Invariant hard-fail). `eval/config.json` supersedes YAML. Atomic dest-dir temp; write; file flush+fsync; `os.replace`; dest-dir fsync when supported; any failure unlinks temp, exit 1. `.gitignore` `eval/reports/`.
+- [x] 4.1 RED/GREEN `cli.py`+`__main__.py`: injectable `main(argv, evaluator=...)`; no `[project.scripts]`. No `--live`; `--fail-under-precision` opt-in; exits 0/2/3/1 (Pass report, Distinct exits, Precision gate, Invariant hard-fail). `eval/config.json` supersedes YAML. Atomic dest-dir temp; write; file flush+fsync; `os.replace`; dest-dir fsync when supported; any failure unlinks temp, exit 1. `.gitignore` `eval/reports/`. (PR #41 merged at `54756b9582aa8981a8cae71de0e763f6e4ada961`.)
 
 ## Phase 5: Embedder + DB (PR6)
 
-- [ ] 5.1 RED/GREEN `embedder.py`: SHA-256 token → axis `% 1536` L2; length exactly 1536. GREEN `db.py`+`seed.py`: `raguard_eval_{hex12}` via `apps/api/alembic.ini`; `DROP … WITH (FORCE)` finally.
+- [x] 5.1 RED/GREEN `embedder.py`: SHA-256 token → axis `% 1536` L2; length exactly 1536. GREEN `db.py`+`seed.py`: `raguard_eval_{hex12}` via `apps/api/alembic.ini`; `DROP … WITH (FORCE)` finally. (Work units `f537a75` embedder + `65a47f0` DB/seed; focused and non-e2e checks observed green.)
 
 ## Phase 6: Runner (PR7)
 
