@@ -8,6 +8,9 @@ dependencies = [
     "raguard-api",
 ]
 
+[project.scripts]
+raguard-eval = "raguard_eval.cli:main"
+
 [build-system]
 requires = ["uv_build>=0.12.1,<0.13"]
 build-backend = "uv_build"
