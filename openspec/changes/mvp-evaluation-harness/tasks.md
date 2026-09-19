@@ -51,5 +51,5 @@ Slices (stop >400): PR1 313/2; PR2 280–360/3; PR3 250–320/8; PR4 240–300/4
 
 ## Phase 7: Fixtures + CI + docs (PR8)
 
-- [ ] 7.1 Add `eval/datasets/mvp-v1/{manifest,corpus,actors}.json`+`cases.jsonl` (15–25, all kinds).
-- [ ] 7.2 `.github/workflows/ci.yml` python job: omit `--fail-under-precision` so exit 2=invariant; hard-fail 1/2/3; upload report. Update `docs/CODEBASE-GUIDE.md`+`docs/codebase/mental-model.md`.
+- [x] 7.1 Add `eval/datasets/mvp-v1/{manifest,corpus,actors}.json`+`cases.jsonl` (15–25, all kinds). (Done: `4642972` — 20 cases across all 5 kinds + `eval/config.json`; `load_dataset` validation and default CLI run verdict=pass exit=0 on isolated 55432 per ODD-1 evidence.)
+- [x] 7.2 `.github/workflows/ci.yml` python job: omit `--fail-under-precision` so exit 2=invariant; hard-fail 1/2/3; upload report. Update `docs/CODEBASE-GUIDE.md`+`docs/codebase/mental-model.md`. (Done: `1dd38e8` — offline gate step + `eval-report` artifact upload + both docs pages per ODD-2 evidence.)
