@@ -417,6 +417,23 @@ def test_invariant_failure_maps_to_cli_exit_two(tmp_path: Path) -> None:
     def _evaluator(dataset: Any, *, k: int) -> dict[str, Any]:
         return asyncio.run(run_evaluation(bad_dir, k=k))
 
+    async def _probe_admin() -> None:
+        engine = create_async_engine(
+            db_module.eval_admin_url(),
+            isolation_level="AUTOCOMMIT",
+            connect_args={"connect_timeout": 2},
+        )
+        try:
+            async with engine.connect():
+                pass
+        finally:
+            await engine.dispose()
+
+    try:
+        asyncio.run(_probe_admin())
+    except OperationalError:
+        pytest.skip(_SKIP_DB)
+
     try:
         exit_code = cli_main(args, evaluator=_evaluator)
     except OperationalError:
