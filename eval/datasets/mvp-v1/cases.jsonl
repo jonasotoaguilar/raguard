@@ -1,0 +1,20 @@
+{"actor_id":"actor-ana","completion_text":"[1]","id":"rel-lager-01","kind":"relevant","query":"lager fermentation temperature twelve degrees","relevant_chunk_ids":["c-hb-1"]}
+{"actor_id":"actor-ana","id":"rel-harbor-02","kind":"relevant","query":"harbor tide mooring ropes canvas sails","relevant_chunk_ids":["c-hb-2"]}
+{"actor_id":"actor-ana","id":"rel-geothermal-03","kind":"relevant","query":"geothermal vent pressure valve calibration","relevant_chunk_ids":["c-rb-1"]}
+{"actor_id":"actor-ana","id":"rel-alpine-04","kind":"relevant","query":"alpine rescue beacon mountain shelter","relevant_chunk_ids":["c-rb-2"]}
+{"actor_id":"actor-beto","completion_text":"[1]","id":"rel-ledger-05","kind":"relevant","query":"ledger reconciliation copper seal invoice","relevant_chunk_ids":["c-lg-1"]}
+{"actor_id":"actor-beto","id":"rel-orchard-06","kind":"relevant","query":"orchard cider press apple crates","relevant_chunk_ids":["c-lg-2"]}
+{"actor_id":"actor-ana","id":"neu-quiet-01","kind":"neutral","query":"xylophone zebra quantum fjord","relevant_chunk_ids":[]}
+{"actor_id":"actor-ana","id":"neu-quiet-02","kind":"neutral","query":"quasar nebula penguin waltz","relevant_chunk_ids":[]}
+{"actor_id":"actor-beto","id":"neu-quiet-03","kind":"neutral","query":"kazoo yodel zircon pixel","relevant_chunk_ids":[]}
+{"actor_id":"actor-beto","id":"neu-quiet-04","kind":"neutral","query":"vortex ukulele jigsaw comet","relevant_chunk_ids":[]}
+{"actor_id":"actor-ana","id":"xt-ledger-01","kind":"cross-tenant","query":"ledger reconciliation copper seal banner","relevant_chunk_ids":["c-lg-1"]}
+{"actor_id":"actor-ana","id":"xt-orchard-02","kind":"cross-tenant","query":"orchard cider apple crates harvest","relevant_chunk_ids":["c-lg-2"]}
+{"actor_id":"actor-beto","id":"xt-lager-03","kind":"cross-tenant","query":"lager fermentation cellar temperature","relevant_chunk_ids":["c-hb-1"]}
+{"actor_id":"actor-beto","id":"xt-geothermal-04","kind":"cross-tenant","query":"geothermal vent calibration steam conduit","relevant_chunk_ids":["c-rb-1"]}
+{"actor_id":"actor-nocap","id":"den-lager-01","kind":"capability-denied","query":"lager fermentation temperature","relevant_chunk_ids":[]}
+{"actor_id":"actor-nocap","id":"den-ledger-02","kind":"capability-denied","query":"ledger reconciliation invoice","relevant_chunk_ids":[]}
+{"actor_id":"actor-nocap","id":"den-harbor-03","kind":"capability-denied","query":"harbor tide mooring schedule","relevant_chunk_ids":[]}
+{"actor_id":"actor-ana","completion_text":"[1]","id":"adv-bravo-01","kind":"adversarial","query":"bravo protocol inert directive archive","relevant_chunk_ids":["c-hb-3"]}
+{"actor_id":"actor-ana","id":"adv-cipher-02","kind":"adversarial","query":"cipher rotation dawn keeper archive","relevant_chunk_ids":["c-rb-3"]}
+{"actor_id":"actor-beto","completion_text":"[1]","id":"adv-roster-03","kind":"adversarial","query":"roster directive inert print memo","relevant_chunk_ids":["c-lg-4"]}

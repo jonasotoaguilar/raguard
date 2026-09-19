@@ -1,0 +1,11 @@
+{
+  "actors": [
+    { "capabilities": ["chat.use"], "id": "actor-ana", "tenant_id": "t-acme" },
+    {
+      "capabilities": ["chat.use"],
+      "id": "actor-beto",
+      "tenant_id": "t-globex"
+    },
+    { "capabilities": [], "id": "actor-nocap", "tenant_id": "t-acme" }
+  ]
+}
