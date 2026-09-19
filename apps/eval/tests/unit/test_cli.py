@@ -208,7 +208,52 @@ def test_invalid_k_exit_three(tmp_path: Path) -> None:
     assert main(_args(tmp_path, "--k", "0"), evaluator=_pass_evaluator) == 3
 
 
-def test_no_project_scripts_table() -> None:
+def test_project_scripts_exposes_raguard_eval() -> None:
     root = Path(__file__).resolve().parents[4]
     text = (root / "apps" / "eval" / "pyproject.toml").read_text()
-    assert "[project.scripts]" not in text
+    assert "[project.scripts]" in text
+    assert "raguard-eval" in text
+    assert "raguard_eval.cli:main" in text
+
+
+def test_default_evaluator_delegates_to_phase6_runner(
+    ready: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import raguard_eval.cli as cli_module
+    import raguard_eval.runner as runner_module
+
+    called: dict[str, Any] = {}
+
+    def fake_evaluate(dataset_dir: Any, *, k: int) -> dict[str, Any]:
+        called["dataset_dir"] = str(dataset_dir)
+        called["k"] = k
+        return {
+            "aggregates": {"precision_at_10": 0.9},
+            "cases": [],
+            "failure_reasons": [],
+            "verdict": "pass",
+        }
+
+    monkeypatch.setattr(runner_module, "evaluate", fake_evaluate)
+    result = cli_module._default_evaluate(str(ready / "ds"), k=10)
+    assert called == {"dataset_dir": str(ready / "ds"), "k": 10}
+    assert result["aggregates"] == {"precision_at_10": 0.9}
+
+
+def test_main_uses_runner_by_default(ready: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import raguard_eval.runner as runner_module
+
+    def fake_evaluate(dataset_dir: Any, *, k: int) -> dict[str, Any]:
+        assert str(dataset_dir) == str(ready / "ds")
+        assert k == 10
+        return {
+            "aggregates": {"precision_at_10": 0.9},
+            "cases": [],
+            "failure_reasons": [],
+            "verdict": "pass",
+        }
+
+    monkeypatch.setattr(runner_module, "evaluate", fake_evaluate)
+    assert main(_args(ready)) == 0
+    report = json.loads((ready / "reports" / "latest.json").read_text())
+    assert report["aggregates"] == {"precision_at_10": 0.9}

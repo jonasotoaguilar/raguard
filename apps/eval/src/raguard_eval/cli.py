@@ -2,7 +2,8 @@
 
 Exits: 0 pass, 2 invariant or opted-in precision gate, 3 dataset/config
 error with no verdict, 1 internal or non-atomic write. No live-provider
-flag; the runner slice wires the real evaluator through ``evaluator``.
+flag; the default evaluator is the Phase 6 offline runner, while callers
+may still inject a custom ``evaluator``.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from raguard_eval.dataset import Dataset, load_dataset
+from raguard_eval.dataset import load_dataset
 from raguard_eval.errors import DatasetInvalid
 from raguard_eval.report import build_report
 
@@ -29,9 +30,11 @@ EXIT_INTERNAL = 1
 Evaluator = Callable[..., Mapping[str, Any]]
 
 
-def _default_evaluate(_dataset: Dataset, *, k: int) -> Mapping[str, Any]:
-    """Offline placeholder; the runner slice injects the real evaluator."""
-    return {"aggregates": {}, "cases": [], "failure_reasons": [], "verdict": "pass"}
+def _default_evaluate(dataset_dir: str | Path, *, k: int) -> Mapping[str, Any]:
+    """Phase 6 offline runner over the CLI dataset directory."""
+    from raguard_eval import runner as runner_module
+
+    return runner_module.evaluate(dataset_dir, k=k)
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -123,7 +126,6 @@ def _atomic_write_text(dest: Path, text: str) -> None:
 
 def main(argv: Sequence[str] | None = None, evaluator: Evaluator | None = None) -> int:
     args = _parse_args(argv)
-    run_evaluator = evaluator or _default_evaluate
     try:
         config = _load_config(args.config)
         k = args.k if args.k is not None else config.get("k", DEFAULT_K)
@@ -134,7 +136,10 @@ def main(argv: Sequence[str] | None = None, evaluator: Evaluator | None = None) 
             gate = _as_number_or_none(config.get("fail_under_precision"), "fail_under_precision")
         draft = _as_number_or_none(config.get("draft_precision_at_10"), "draft_precision_at_10")
         dataset = load_dataset(args.dataset)
-        evaluated = run_evaluator(dataset, k=k)
+        if evaluator is None:
+            evaluated = _default_evaluate(args.dataset, k=k)
+        else:
+            evaluated = evaluator(dataset, k=k)
         result = _apply_precision_gate(dict(evaluated), gate)
         settings: dict[str, Any] = {"k": k}
         for key in (
