@@ -12,7 +12,18 @@ from collections.abc import Sequence
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-EMBEDDING_DIMENSION = 1536
+EMBEDDING_DIMENSION = 1024
+
+
+def validate_ollama_base_url(base_url: str) -> None:
+    """Fail fast on non-HTTP(S) Ollama base URLs; never a network call."""
+    schemes = ("http://", "https://")
+    if not isinstance(base_url, str) or not any(
+        base_url.startswith(scheme) and len(base_url) > len(scheme) for scheme in schemes
+    ):
+        raise ValueError(
+            f"ollama_base_url invalid: {base_url!r}; require an http:// or https:// URL"
+        )
 
 
 class DocumentStatus(StrEnum):

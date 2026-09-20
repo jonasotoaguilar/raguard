@@ -4,7 +4,7 @@ These tests compile the built statements against the PostgreSQL dialect and
 assert the spec/design contracts without touching a database: the tenant
 predicate is a bound parameter that precedes ranking in both signals, the FTS
 signal uses ``plainto_tsquery('simple', :query)``, the semantic signal binds
-the embedding as ``HALFVEC(1536)``, both join documents by tenant+document
+the embedding as ``HALFVEC(1024)``, both join documents by tenant+document
 keys, break signal ties by ascending chunk id, and bound the candidate count.
 """
 
@@ -112,7 +112,7 @@ def test_semantic_query_binds_halfvec_1536_embedding():
     assert "%(embedding)s" in sql
     embedding_bind = _bindparam(statement, "embedding")
     assert isinstance(embedding_bind.type, HALFVEC)
-    assert embedding_bind.type.dim == 1536
+    assert embedding_bind.type.dim == 1024
 
 
 def test_semantic_query_applies_tenant_predicate_before_ranking():

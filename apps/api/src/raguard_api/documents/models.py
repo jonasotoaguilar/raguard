@@ -5,7 +5,7 @@ Constraints mirror apps/api/alembic/versions/0002_documents_chunks.py exactly:
   the DESIGN.md allowlist, (tenant_id, id) unique backing the chunks composite
   FK, tenant-leading indexes for scoped status reads and sweep freshness;
 - chunks: one position per document, composite tenant+document FK preventing
-  cross-tenant chunk attachment, halfvec(1536) embeddings with an HNSW cosine
+  cross-tenant chunk attachment, halfvec(1024) embeddings with an HNSW cosine
   index, and a generated tsvector search column covered by a GIN index.
 
 Internal readiness (dispatch_ready) and storage keys live only here, never on

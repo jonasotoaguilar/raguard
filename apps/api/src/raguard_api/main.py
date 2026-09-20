@@ -21,7 +21,7 @@ from raguard_api.documents.router import create_documents_router
 from raguard_api.documents.storage import S3ObjectStore, create_s3_client
 from raguard_api.errors import register_error_handlers
 from raguard_api.org.router import create_org_router
-from raguard_api.retrieval.embeddings import OpenAIEmbedder
+from raguard_api.retrieval.embeddings import create_embedder
 from raguard_api.retrieval.router import create_retrieval_router
 
 
@@ -42,11 +42,7 @@ def create_app(*, settings: Settings, session_factory: async_sessionmaker[AsyncS
             session_factory=session_factory, settings=settings, store=store, queue=queue
         )
     )
-    embedder = OpenAIEmbedder(
-        api_key=settings.openai_api_key,
-        model=settings.embedding_model,
-        timeout_seconds=settings.provider_timeout_seconds,
-    )
+    embedder = create_embedder(settings=settings)
     app.include_router(
         create_retrieval_router(
             session_factory=session_factory, settings=settings, embedder=embedder

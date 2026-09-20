@@ -15,6 +15,8 @@ from typing import Any
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
+from raguard_api.documents.contracts import validate_ollama_base_url
+
 
 def validate_chat_bounds(
     *, model: str, max_output_tokens: int, retries: int, timeout_seconds: float
@@ -30,6 +32,14 @@ def validate_chat_bounds(
         raise ValueError(f"chat_retries out of bounds: {retries}; require 0..2")
     if not timeout_seconds > 0:
         raise ValueError(f"provider_timeout_seconds out of bounds: {timeout_seconds}; require > 0")
+
+
+def validate_embedding_provider(*, provider: str, base_url: str) -> None:
+    """Startup guard: the embedding provider is known; Ollama needs an http(s) base URL."""
+    if provider not in ("openai", "ollama"):
+        raise ValueError(f"embedding_provider unknown: {provider!r}; require 'openai' or 'ollama'")
+    if provider == "ollama":
+        validate_ollama_base_url(base_url)
 
 
 def validate_retrieval_bounds(
@@ -105,6 +115,12 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     openai_api_key: str = ""
     provider_timeout_seconds: float = 30.0
+    # --- Embedding provider selection (ODD-1: OpenAI default, Ollama opt-in).
+    # Both providers standardize on EMBEDDING_DIMENSION (1024); switching the
+    # embedding model requires a full reindex, never mixed vectors. ---
+    embedding_provider: str = "openai"
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_embedding_model: str = "qwen3-embedding:0.6b"
 
     # --- Chat completion defaults/bounds (design: gpt-4o-mini, max 500 output
     # tokens, at most 2 application retries; the completer disables SDK retries
@@ -117,6 +133,7 @@ class Settings(BaseSettings):
     model_config = {"extra": "ignore"}
 
     def model_post_init(self, __context: Any) -> None:
+        validate_embedding_provider(provider=self.embedding_provider, base_url=self.ollama_base_url)
         validate_chat_bounds(
             model=self.chat_model,
             max_output_tokens=self.chat_max_output_tokens,
