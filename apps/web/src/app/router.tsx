@@ -13,7 +13,7 @@ import {
 } from '../api/client'
 import { RootRoute } from '../routes/__root'
 import { ChatPage } from '../routes/chat'
-import { DocumentsPage } from '../routes/documents'
+import { DocumentDetailPage, DocumentsPage } from '../routes/documents'
 import { loginRoute } from '../routes/login'
 import { queryClient } from './query-client'
 import { EmptyState, ForbiddenState } from './shell'
@@ -48,6 +48,18 @@ const documentsRoute = createRoute({
   component: DocumentsPage,
 })
 
+export const documentDetailRoute = createRoute({
+  getParentRoute: () => RootRoute,
+  path: '/documents/$documentId',
+  beforeLoad: ({ location }) => protect(location.pathname),
+  component: DocumentDetailRouteView,
+})
+
+function DocumentDetailRouteView() {
+  const { documentId } = documentDetailRoute.useParams()
+  return <DocumentDetailPage documentId={documentId} />
+}
+
 const adminRoute = createRoute({
   getParentRoute: () => RootRoute,
   path: '/admin',
@@ -67,6 +79,7 @@ const routeTree = RootRoute.addChildren([
   indexRoute,
   chatRoute,
   documentsRoute,
+  documentDetailRoute,
   adminRoute,
 ])
 

@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { ApiError } from '../api/client'
 import {
   type DocumentList,
+  getDocument,
   listDocuments,
   uploadDocument,
 } from '../api/documents'
@@ -39,6 +40,78 @@ export function documentsQueryOptions() {
     refetchInterval: (query) => documentsPollInterval(query.state.data),
     refetchIntervalInBackground: false,
   })
+}
+
+/**
+ * Sole data-layer key for one document: `['document', documentId]`.
+ * Tenant/resource authorization stays server-side; the key is a cache
+ * address only.
+ */
+export function documentDetailQueryKey(documentId: string) {
+  return ['document', documentId] as const
+}
+
+/** Shared detail options: focus refetch on, no background polling. */
+export function documentDetailQueryOptions(documentId: string) {
+  return queryOptions({
+    queryKey: documentDetailQueryKey(documentId),
+    queryFn: ({ signal }) => getDocument(documentId, { signal }),
+  })
+}
+
+/**
+ * ODD-4 document detail. Member-protected by the route guard; tenant and
+ * resource authorization stay server-side. Renders only the allowlisted
+ * detail envelope (id/name/status/failure_reason): a name heading, status
+ * chip, and document-id metadata, plus a back link. 403 and 404 stay
+ * neutral without existence disclosure; other failures offer a retry.
+ */
+export function DocumentDetailPage({ documentId }: { documentId: string }) {
+  const detail = useQuery(documentDetailQueryOptions(documentId))
+  const error = detail.error instanceof ApiError ? detail.error : null
+
+  return (
+    <section
+      aria-labelledby="document-detail-title"
+      style={{ maxWidth: 720, padding: 16 }}
+    >
+      <a href="/documents">Back to documents</a>
+      {detail.isSuccess ? (
+        <h1 id="document-detail-title">{detail.data.name}</h1>
+      ) : (
+        <h1 id="document-detail-title">Document</h1>
+      )}
+      {detail.isPending ? <Skeleton label="Loading document" /> : null}
+      {detail.isError ? (
+        error?.status === 403 ? (
+          <ForbiddenState />
+        ) : error?.status === 404 ? (
+          <EmptyState
+            title="Not available"
+            body="This document isn't available or you don't have access to it."
+          />
+        ) : (
+          <ErrorState
+            code={error?.code ?? 'unknown_error'}
+            message={error?.message ?? 'Request failed. Please try again.'}
+            onRetry={() => void detail.refetch()}
+          />
+        )
+      ) : null}
+      {detail.isSuccess ? (
+        <>
+          <StatusChip
+            status={detail.data.status as ChipStatus}
+            failureReason={detail.data.failure_reason}
+          />
+          <dl>
+            <dt>Document ID</dt>
+            <dd style={{ overflowWrap: 'anywhere' }}>{detail.data.id}</dd>
+          </dl>
+        </>
+      ) : null}
+    </section>
+  )
 }
 
 /**
