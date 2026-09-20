@@ -27,7 +27,226 @@ const ANSWER = {
   ],
 }
 
-/** Never-resolving fetch mock: rejects with AbortError only when the signal fires. */
+const TWO_CITATIONS = {
+  answer: 'Alpha and beta agree [1] [2].',
+  citations: [
+    {
+      chunk_id: '11111111-1111-1111-1111-111111111111',
+      document_id: '22222222-2222-2222-2222-222222222222',
+      document_name: 'alpha-guide.pdf',
+      position: 0,
+      content: 'alpha beta gamma passage',
+    },
+    {
+      chunk_id: '33333333-3333-3333-3333-333333333333',
+      document_id: '44444444-4444-4444-4444-444444444444',
+      document_name: 'beta-notes.md',
+      position: 3,
+      content: 'beta delta epsilon passage',
+    },
+  ],
+}
+
+const FIRST_ANSWER = {
+  answer: 'First says so [1].',
+  citations: [
+    {
+      chunk_id: '11111111-1111-1111-1111-111111111111',
+      document_id: '22222222-2222-2222-2222-222222222222',
+      document_name: 'alpha-guide.pdf',
+      position: 0,
+      content: 'alpha first passage',
+    },
+  ],
+}
+
+const SECOND_ANSWER = {
+  answer: 'Second says so [1].',
+  citations: [
+    {
+      chunk_id: '55555555-5555-5555-5555-555555555555',
+      document_id: '66666666-6666-6666-6666-666666666666',
+      document_name: 'beta-manual.pdf',
+      position: 7,
+      content: 'beta second passage',
+    },
+  ],
+}
+
+const HOSTILE_ANSWER = {
+  answer: 'Evil says so [1].',
+  citations: [
+    {
+      chunk_id: '77777777-7777-7777-7777-777777777777',
+      document_id: '88888888-8888-8888-8888-888888888888',
+      document_name: 'evil.pdf',
+      position: 0,
+      content: '<script>alert(1)</script><a href="https://evil.test">click</a>',
+    },
+  ],
+}
+
+async function askQuestion(
+  user: ReturnType<typeof userEvent.setup>,
+  text: string,
+) {
+  await user.type(screen.getByLabelText(/ask a question/i), `${text}{enter}`)
+}
+
+describe('ChatPage source preview', () => {
+  it('opens a labelled dialog from the marker with chunk context', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse(200, TWO_CITATIONS)),
+    )
+    render(<ChatPage />)
+    await askQuestion(user, 'What do they say?')
+    await waitFor(() =>
+      expect(screen.getByText(/alpha and beta agree/i)).toBeInTheDocument(),
+    )
+
+    await user.click(
+      screen.getByRole('button', { name: 'Source 1: alpha-guide.pdf' }),
+    )
+    const dialog = screen.getByRole('dialog', { name: /alpha-guide\.pdf/i })
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(
+      screen.getByRole('heading', { name: /alpha-guide\.pdf/i }),
+    ).toBeVisible()
+    expect(screen.getByText('alpha beta gamma passage')).toBeVisible()
+    expect(screen.getByText(/position 0/i)).toBeVisible()
+    expect(screen.getByText(/chunk 1 of 2/i)).toBeVisible()
+  })
+
+  it('keeps Previous/Next bounded within the message citations', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse(200, TWO_CITATIONS)),
+    )
+    render(<ChatPage />)
+    await askQuestion(user, 'What do they say?')
+    await waitFor(() =>
+      expect(screen.getByText(/alpha and beta agree/i)).toBeInTheDocument(),
+    )
+
+    await user.click(
+      screen.getByRole('button', { name: 'Source 1: alpha-guide.pdf' }),
+    )
+    expect(screen.getByRole('button', { name: /previous/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /next/i })).toBeEnabled()
+
+    await user.click(screen.getByRole('button', { name: /next/i }))
+    expect(screen.getByText('beta delta epsilon passage')).toBeVisible()
+    expect(screen.getByText(/chunk 2 of 2/i)).toBeVisible()
+    expect(screen.getByRole('button', { name: /next/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /previous/i })).toBeEnabled()
+
+    await user.click(screen.getByRole('button', { name: /previous/i }))
+    expect(screen.getByText('alpha beta gamma passage')).toBeVisible()
+    expect(screen.getByText(/chunk 1 of 2/i)).toBeVisible()
+  })
+
+  it('scopes the preview to the activated assistant message', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(200, FIRST_ANSWER))
+        .mockResolvedValueOnce(jsonResponse(200, SECOND_ANSWER)),
+    )
+    render(<ChatPage />)
+    await askQuestion(user, 'first question')
+    await waitFor(() =>
+      expect(screen.getByText(/first says so/i)).toBeInTheDocument(),
+    )
+    await askQuestion(user, 'second question')
+    await waitFor(() =>
+      expect(screen.getByText(/second says so/i)).toBeInTheDocument(),
+    )
+
+    await user.click(
+      screen.getByRole('button', { name: 'Source 1: beta-manual.pdf' }),
+    )
+    const dialog = screen.getByRole('dialog', { name: /beta-manual\.pdf/i })
+    expect(dialog).toBeVisible()
+    expect(screen.getByText('beta second passage')).toBeVisible()
+    expect(screen.getByText(/chunk 1 of 1/i)).toBeVisible()
+    expect(screen.getByRole('button', { name: /previous/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /next/i })).toBeDisabled()
+  })
+
+  it('closes on Escape and returns focus to the marker', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, ANSWER)))
+    render(<ChatPage />)
+    await askQuestion(user, 'What is alpha?')
+    await waitFor(() =>
+      expect(screen.getByText(/alpha guide says so/i)).toBeInTheDocument(),
+    )
+
+    const marker = screen.getByRole('button', {
+      name: 'Source 1: alpha-guide.pdf',
+    })
+    await user.click(marker)
+    expect(screen.getByRole('dialog')).toBeVisible()
+    expect(screen.getByRole('button', { name: /close/i })).toHaveFocus()
+
+    await user.keyboard('{Escape}')
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
+    )
+    expect(
+      screen.getByRole('button', { name: 'Source 1: alpha-guide.pdf' }),
+    ).toHaveFocus()
+  })
+
+  it('closes from the Close button and unmounts the dialog', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(200, ANSWER)))
+    render(<ChatPage />)
+    await askQuestion(user, 'What is alpha?')
+    await waitFor(() =>
+      expect(screen.getByText(/alpha guide says so/i)).toBeInTheDocument(),
+    )
+
+    await user.click(
+      screen.getByRole('button', { name: 'Source 1: alpha-guide.pdf' }),
+    )
+    expect(screen.getByRole('dialog')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: /close/i }))
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
+    )
+    expect(
+      screen.getByRole('button', { name: 'Source 1: alpha-guide.pdf' }),
+    ).toHaveFocus()
+  })
+
+  it('renders hostile citation text as inert text without markup', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse(200, HOSTILE_ANSWER)),
+    )
+    const { container } = render(<ChatPage />)
+    await askQuestion(user, 'What is evil?')
+    await waitFor(() =>
+      expect(screen.getByText(/evil says so/i)).toBeInTheDocument(),
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Source 1: evil.pdf' }))
+    expect(
+      screen.getByText(
+        '<script>alert(1)</script><a href="https://evil.test">click</a>',
+      ),
+    ).toBeVisible()
+    expect(container.querySelector('a')).toBeNull()
+    expect(container.querySelector('script')).toBeNull()
+  })
+})
 function abortableFetch() {
   return vi.fn().mockImplementation(
     (_url: string, init: RequestInit = {}) =>

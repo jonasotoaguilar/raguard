@@ -2,9 +2,11 @@ import { useRef, useState } from 'react'
 import { type Citation, postChat } from '../api/chat'
 import { ApiError } from '../api/client'
 import { EmptyState, ErrorState, ForbiddenState } from '../app/shell'
-import type { CitationSelection } from '../components/CitationMarker'
 import { Composer } from '../components/Composer'
 import { Message } from '../components/Message'
+import { SourcePreview } from '../components/SourcePreview'
+
+type SelectedSource = { citations: Citation[]; index: number }
 
 type ThreadItem =
   | { kind: 'user'; id: number; text: string }
@@ -25,19 +27,17 @@ function networkError(): ApiError {
 }
 
 /**
- * ODD-2 stateless chat thread. Ephemeral component memory only — no
- * persistence. The user message appends optimistically; the assistant appears
- * only from the POST /api/chat response. While pending, a truthful status
- * shows and the request is abortable. ODD-3 consumes `onCitationSelect`.
+ * ODD-3 chat thread. Ephemeral component memory only — no persistence. The
+ * user message appends optimistically; the assistant appears only from the
+ * POST /api/chat response. While pending, a truthful status shows and the
+ * request is abortable. ChatPage owns the selected citation: activating a
+ * marker opens SourcePreview over exactly that message's citations array.
  */
-export function ChatPage({
-  onCitationSelect,
-}: {
-  onCitationSelect?: CitationSelection
-}) {
+export function ChatPage() {
   const [items, setItems] = useState<ThreadItem[]>([])
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
+  const [selected, setSelected] = useState<SelectedSource | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const idRef = useRef(0)
   const lastQueryRef = useRef('')
@@ -129,7 +129,9 @@ export function ChatPage({
                   messageRole="assistant"
                   answer={item.answer}
                   citations={item.citations}
-                  onCitationSelect={onCitationSelect}
+                  onCitationSelect={(_citation, index) =>
+                    setSelected({ citations: item.citations, index })
+                  }
                 />
               </li>
             ) : (
@@ -158,6 +160,28 @@ export function ChatPage({
         onSubmit={(query) => void send(query)}
         onCancel={cancel}
       />
+      {selected !== null ? (
+        <SourcePreview
+          citation={selected.citations[selected.index] ?? null}
+          citations={selected.citations}
+          selectedIndex={selected.index}
+          onClose={() => setSelected(null)}
+          onPrevious={() =>
+            setSelected((prev) =>
+              prev !== null && prev.index > 0
+                ? { ...prev, index: prev.index - 1 }
+                : prev,
+            )
+          }
+          onNext={() =>
+            setSelected((prev) =>
+              prev !== null && prev.index < prev.citations.length - 1
+                ? { ...prev, index: prev.index + 1 }
+                : prev,
+            )
+          }
+        />
+      ) : null}
     </section>
   )
 }
