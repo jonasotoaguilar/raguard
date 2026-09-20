@@ -13,6 +13,7 @@ import {
 } from '../api/client'
 import { RootRoute } from '../routes/__root'
 import { ChatPage } from '../routes/chat'
+import { DocumentsPage } from '../routes/documents'
 import { loginRoute } from '../routes/login'
 import { queryClient } from './query-client'
 import { EmptyState, ForbiddenState } from './shell'
@@ -44,12 +45,7 @@ const documentsRoute = createRoute({
   getParentRoute: () => RootRoute,
   path: '/documents',
   beforeLoad: ({ location }) => protect(location.pathname),
-  component: () => (
-    <EmptyState
-      title="Documents arrive in ODD-4"
-      body="Sign-in and shell are live; the library lands next."
-    />
-  ),
+  component: DocumentsPage,
 })
 
 const adminRoute = createRoute({
