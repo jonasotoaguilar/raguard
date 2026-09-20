@@ -10,6 +10,8 @@ import {
   MEMBERSHIPS_QUERY_KEY,
   ROLES_QUERY_KEY,
   USERS_QUERY_KEY,
+  updateMembership,
+  updateRole,
 } from '../api/org'
 import {
   AdminPage,
@@ -23,11 +25,15 @@ vi.mock('../api/org', async (importOriginal) => ({
   listUsers: vi.fn(),
   listRoles: vi.fn(),
   listMemberships: vi.fn(),
+  updateRole: vi.fn(),
+  updateMembership: vi.fn(),
 }))
 
 const usersMock = vi.mocked(listUsers)
 const rolesMock = vi.mocked(listRoles)
 const membershipsMock = vi.mocked(listMemberships)
+const updateRoleMock = vi.mocked(updateRole)
+const updateMembershipMock = vi.mocked(updateMembership)
 
 function renderPage() {
   const client = new QueryClient({
@@ -92,7 +98,8 @@ describe('AdminPage tables', () => {
       expect.arrayContaining(['Email', 'ID', 'User', 'Role', 'Capabilities']),
     )
     expect(screen.getByText('u-1')).toBeInTheDocument()
-    expect(screen.getByText('users.manage')).toBeInTheDocument()
+    // The capability renders in the table cell and again as an editor label.
+    expect(screen.getAllByText('users.manage').length).toBeGreaterThanOrEqual(1)
   })
 
   it('renders untrusted API text as inert text without markup', async () => {
@@ -178,6 +185,219 @@ describe('AdminPage tables', () => {
       expect(screen.getByText('a@example.com')).toBeInTheDocument(),
     )
     expect(usersMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('AdminPage role edits', () => {
+  function seedRoleEdit() {
+    usersMock.mockResolvedValue({ users: [] })
+    membershipsMock.mockResolvedValue({ memberships: [] })
+    rolesMock.mockResolvedValue({
+      roles: [{ id: 'r-1', name: 'admin', capabilities: ['users.manage'] }],
+    })
+  }
+
+  it('saves checked capabilities and invalidates the roles key', async () => {
+    seedRoleEdit()
+    updateRoleMock.mockResolvedValue({
+      id: 'r-1',
+      name: 'admin',
+      capabilities: ['users.manage', 'chat.use'],
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() =>
+      expect(screen.getAllByText('users.manage').length).toBeGreaterThanOrEqual(
+        1,
+      ),
+    )
+    const callsBefore = rolesMock.mock.calls.length
+
+    await user.click(screen.getByRole('checkbox', { name: 'chat.use' }))
+    await user.click(screen.getByRole('button', { name: /save role/i }))
+
+    await waitFor(() =>
+      expect(updateRoleMock).toHaveBeenCalledWith('r-1', [
+        'users.manage',
+        'chat.use',
+      ]),
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(/saved/i),
+    )
+    await waitFor(() =>
+      expect(rolesMock.mock.calls.length).toBeGreaterThan(callsBefore),
+    )
+  })
+
+  it('rolls back visibly when saving capabilities fails', async () => {
+    seedRoleEdit()
+    updateRoleMock.mockRejectedValue(
+      new ApiError({ status: 500, code: 'internal_error', message: 'Boom' }),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() =>
+      expect(screen.getAllByText('users.manage').length).toBeGreaterThanOrEqual(
+        1,
+      ),
+    )
+
+    await user.click(screen.getByRole('checkbox', { name: 'chat.use' }))
+    await user.click(screen.getByRole('button', { name: /save role/i }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    // Optimistic row reverts to the server snapshot.
+    await waitFor(() =>
+      expect(
+        screen.getByRole('checkbox', { name: 'chat.use' }),
+      ).not.toBeChecked(),
+    )
+    expect(screen.queryByText('users.manage, chat.use')).toBeNull()
+  })
+
+  it('maps a role-edit 403 to ForbiddenState', async () => {
+    seedRoleEdit()
+    updateRoleMock.mockRejectedValue(
+      new ApiError({ status: 403, code: 'forbidden', message: 'Nope' }),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() =>
+      expect(screen.getAllByText('users.manage').length).toBeGreaterThanOrEqual(
+        1,
+      ),
+    )
+
+    await user.click(screen.getByRole('checkbox', { name: 'chat.use' }))
+    await user.click(screen.getByRole('button', { name: /save role/i }))
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/forbidden/i)).toBeInTheDocument(),
+    )
+  })
+
+  it('does not leak 404 details for a missing role', async () => {
+    seedRoleEdit()
+    updateRoleMock.mockRejectedValue(
+      new ApiError({
+        status: 404,
+        code: 'not_found',
+        message: 'Role not found super-secret-id',
+      }),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() =>
+      expect(screen.getAllByText('users.manage').length).toBeGreaterThanOrEqual(
+        1,
+      ),
+    )
+
+    await user.click(screen.getByRole('checkbox', { name: 'chat.use' }))
+    await user.click(screen.getByRole('button', { name: /save role/i }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    expect(screen.queryByText(/super-secret-id/)).toBeNull()
+  })
+})
+
+describe('AdminPage membership edits', () => {
+  function seedMembershipEdit() {
+    usersMock.mockResolvedValue({ users: [] })
+    membershipsMock.mockResolvedValue({
+      memberships: [{ id: 'm-1', user_email: 'a@example.com', role: 'admin' }],
+    })
+    rolesMock.mockResolvedValue({
+      roles: [
+        { id: 'r-1', name: 'admin', capabilities: ['users.manage'] },
+        { id: 'r-2', name: 'member', capabilities: ['chat.use'] },
+      ],
+    })
+  }
+
+  it('reassigns membership role from the roles listing and refetches', async () => {
+    seedMembershipEdit()
+    updateMembershipMock.mockResolvedValue({ id: 'm-1', role_id: 'r-2' })
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText(/role for a@example\.com/i),
+      ).toBeInTheDocument(),
+    )
+    const callsBefore = membershipsMock.mock.calls.length
+    // Options come from GET /api/org/roles; no tenant IDs on display.
+    expect(screen.getByRole('option', { name: 'member' })).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/r-1/)
+    expect(document.body.textContent).not.toMatch(/tenant[-_ ]?id/i)
+
+    await user.selectOptions(
+      screen.getByLabelText(/role for a@example\.com/i),
+      'r-2',
+    )
+    await user.click(screen.getByRole('button', { name: /save membership/i }))
+
+    await waitFor(() =>
+      expect(updateMembershipMock).toHaveBeenCalledWith('m-1', 'r-2'),
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(/saved/i),
+    )
+    await waitFor(() =>
+      expect(membershipsMock.mock.calls.length).toBeGreaterThan(callsBefore),
+    )
+  })
+
+  it('rolls back visibly when membership reassignment fails', async () => {
+    seedMembershipEdit()
+    updateMembershipMock.mockRejectedValue(
+      new ApiError({ status: 500, code: 'internal_error', message: 'Boom' }),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText(/role for a@example\.com/i),
+      ).toBeInTheDocument(),
+    )
+
+    await user.selectOptions(
+      screen.getByLabelText(/role for a@example\.com/i),
+      'r-2',
+    )
+    await user.click(screen.getByRole('button', { name: /save membership/i }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    await waitFor(() =>
+      expect(screen.getByLabelText(/role for a@example\.com/i)).toHaveValue(
+        'r-1',
+      ),
+    )
+  })
+
+  it('maps a membership-edit 403 to ForbiddenState', async () => {
+    seedMembershipEdit()
+    updateMembershipMock.mockRejectedValue(
+      new ApiError({ status: 403, code: 'forbidden', message: 'Nope' }),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText(/role for a@example\.com/i),
+      ).toBeInTheDocument(),
+    )
+
+    await user.selectOptions(
+      screen.getByLabelText(/role for a@example\.com/i),
+      'r-2',
+    )
+    await user.click(screen.getByRole('button', { name: /save membership/i }))
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/forbidden/i)).toBeInTheDocument(),
+    )
   })
 })
 
