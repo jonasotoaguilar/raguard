@@ -6,17 +6,13 @@ import {
   redirect,
 } from '@tanstack/react-router'
 import { createRoot } from 'react-dom/client'
-import {
-  adminAllowed,
-  authGuardRedirect,
-  setUnauthorizedHandler,
-} from '../api/client'
+import { authGuardRedirect, setUnauthorizedHandler } from '../api/client'
 import { RootRoute } from '../routes/__root'
+import { AdminPage } from '../routes/admin'
 import { ChatPage } from '../routes/chat'
 import { DocumentDetailPage, DocumentsPage } from '../routes/documents'
 import { loginRoute } from '../routes/login'
 import { queryClient } from './query-client'
-import { EmptyState, ForbiddenState } from './shell'
 
 /** Anonymous users go to /login with the return path preserved. */
 function protect(path: string): void {
@@ -64,15 +60,22 @@ const adminRoute = createRoute({
   getParentRoute: () => RootRoute,
   path: '/admin',
   beforeLoad: ({ location }) => protect(location.pathname),
-  component: AdminPlaceholder,
+  component: AdminPage,
 })
 
-function AdminPlaceholder() {
-  if (!adminAllowed()) return <ForbiddenState />
-  return (
-    <EmptyState title="Admin arrives in ODD-5" body="Role tables land next." />
-  )
-}
+const adminUsersRoute = createRoute({
+  getParentRoute: () => RootRoute,
+  path: '/admin/users',
+  beforeLoad: ({ location }) => protect(location.pathname),
+  component: AdminPage,
+})
+
+const adminRolesRoute = createRoute({
+  getParentRoute: () => RootRoute,
+  path: '/admin/roles',
+  beforeLoad: ({ location }) => protect(location.pathname),
+  component: AdminPage,
+})
 
 const routeTree = RootRoute.addChildren([
   loginRoute,
@@ -81,6 +84,8 @@ const routeTree = RootRoute.addChildren([
   documentsRoute,
   documentDetailRoute,
   adminRoute,
+  adminUsersRoute,
+  adminRolesRoute,
 ])
 
 export const router = createRouter({ routeTree })
