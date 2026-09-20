@@ -1,5 +1,5 @@
 import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { type MouseEvent, useState } from 'react'
 import { ApiError } from '../api/client'
 import {
   type DocumentList,
@@ -59,6 +59,35 @@ export function documentDetailQueryOptions(documentId: string) {
   })
 }
 
+/** Plain same-tab click (no modifiers): safe to upgrade to client nav. */
+function isPlainLeftClick(event: MouseEvent<HTMLAnchorElement>): boolean {
+  return (
+    event.button === 0 &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey
+  )
+}
+
+/**
+ * Client-side navigation through the TanStack router so in-memory auth
+ * survives document browsing (a full reload would drop it). Anchors keep
+ * their real hrefs, so rendering without a router provider (unit tests,
+ * no-JS) is unchanged and modifier-clicks keep native new-tab behavior.
+ * The router import is deferred to click time to avoid a module cycle:
+ * app/router imports this file.
+ */
+function goClientSide(event: MouseEvent<HTMLAnchorElement>, href: string) {
+  if (!isPlainLeftClick(event)) return
+  event.preventDefault()
+  void import('../app/router')
+    .then((mod) => mod.router.history.push(href))
+    .catch(() => {
+      window.location.href = href
+    })
+}
+
 /**
  * ODD-4 document detail. Member-protected by the route guard; tenant and
  * resource authorization stay server-side. Renders only the allowlisted
@@ -75,7 +104,12 @@ export function DocumentDetailPage({ documentId }: { documentId: string }) {
       aria-labelledby="document-detail-title"
       style={{ maxWidth: 720, padding: 16 }}
     >
-      <a href="/documents">Back to documents</a>
+      <a
+        href="/documents"
+        onClick={(event) => goClientSide(event, '/documents')}
+      >
+        Back to documents
+      </a>
       {detail.isSuccess ? (
         <h1 id="document-detail-title">{detail.data.name}</h1>
       ) : (
@@ -200,7 +234,14 @@ export function DocumentsPage() {
             {docs.map((doc) => (
               <tr key={doc.id}>
                 <td style={{ overflowWrap: 'anywhere' }}>
-                  <a href={`/documents/${doc.id}`}>{doc.name}</a>
+                  <a
+                    href={`/documents/${doc.id}`}
+                    onClick={(event) =>
+                      goClientSide(event, `/documents/${doc.id}`)
+                    }
+                  >
+                    {doc.name}
+                  </a>
                 </td>
                 <td>
                   <StatusChip

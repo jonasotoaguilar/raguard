@@ -85,6 +85,19 @@ describe('SourcePreview', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
+  it('closes on Escape after focus has moved outside the dialog', async () => {
+    const user = userEvent.setup()
+    const { onClose } = renderPreview()
+    const outside = document.createElement('button')
+    outside.textContent = 'outside trigger'
+    document.body.appendChild(outside)
+    outside.focus()
+    expect(outside).toHaveFocus()
+    await user.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalledTimes(1)
+    outside.remove()
+  })
+
   it('traps Tab forward and Shift+Tab backward within dialog controls', async () => {
     const user = userEvent.setup()
     // Index 0 of 2: Previous disabled, so the trap cycles Close <-> Next.

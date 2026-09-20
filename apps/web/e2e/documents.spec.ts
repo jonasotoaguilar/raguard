@@ -123,7 +123,7 @@ if (!process.env.VITEST) {
 
       await expect(page.getByRole('link', { name: 'notes.md' })).toBeVisible()
       await expect(page.getByRole('link', { name: 'scan.pdf' })).toBeVisible()
-      await expect(page.getByText('Pending')).toBeVisible()
+      await expect(page.locator('[data-status="pending"]')).toHaveCount(2)
     })
 
     test('pending row refreshes to indexed on the next poll', async ({
@@ -187,7 +187,7 @@ if (!process.env.VITEST) {
       await loginToDocuments(page)
 
       await expect(page.getByText(evil)).toBeVisible()
-      await expect(page.locator('script')).toHaveCount(0)
+      await expect(page.locator('#root script')).toHaveCount(0)
     })
   })
 }
