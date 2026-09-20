@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (user-approved; target design for a greenfield repository — no implementation exists yet)
+Implemented (OpenAI + Ollama adapters live and independently selectable; Anthropic chat remains reserved — see Consequences)
 
 ## Date
 
@@ -88,10 +88,10 @@ Direct SDK calls are the cheapest path but make provider replaceability — an e
 
 ## Action Items
 
-1. [ ] Define the two adapter interfaces with minimal DTOs (chat completion; embed text + model id) in shared code.
-2. [ ] Implement OpenAI chat + OpenAI embeddings; add Anthropic chat as the second implementation.
-3. [ ] Require prompt assembly (system/user vs retrieved data) to happen outside adapters, with injection-hardening tests.
-4. [ ] Enforce a single embedding model id per environment (config validation) to protect index/query consistency.
+1. [x] Define the two adapter interfaces with minimal DTOs (chat completion; embed text + model id) in shared code.
+2. [x] Implement OpenAI chat + OpenAI embeddings; Ollama chat + Ollama embeddings implemented as the local alternative (independently selectable via `EMBEDDING_PROVIDER`/`CHAT_PROVIDER`; both standardize on 1024 dimensions, one model per environment, switching requires full reindex). Anthropic chat remains reserved.
+3. [x] Require prompt assembly (system/user vs retrieved data) to happen outside adapters, with injection-hardening tests.
+4. [x] Enforce a single embedding model id per environment (config validation) to protect index/query consistency.
 
 ## References
 

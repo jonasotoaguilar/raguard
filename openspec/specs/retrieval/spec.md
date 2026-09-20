@@ -46,7 +46,7 @@ Both signals MUST apply the tenant predicate before ranking. The route MUST requ
 
 ### Requirement: Deterministic hybrid fusion
 
-Both signals MUST run in parallel, tenant-filtered — keyword FTS (`simple` config, `ts_rank`) and semantic (cosine, `halfvec(1536)`) — fused with RRF (k 60, candidates 50, configurable); chunks in both signals MUST sum contributions. Ordering MUST be deterministic: fused score desc, chunk id asc.
+Both signals MUST run in parallel, tenant-filtered — keyword FTS (`simple` config, `ts_rank`) and semantic (cosine, `halfvec(1024)`) — fused with RRF (k 60, candidates 50, configurable); chunks in both signals MUST sum contributions. Ordering MUST be deterministic: fused score desc, chunk id asc.
 
 #### Scenario: Dual-signal chunk accumulates contributions
 
@@ -62,13 +62,13 @@ Both signals MUST run in parallel, tenant-filtered — keyword FTS (`simple` con
 
 ### Requirement: Same-model query embedding
 
-Queries MUST be embedded per the ingestion contract (`text-embedding-3-small`, 1536 dims, configurable) and bind against `halfvec(1536)`. Tests MUST inject a dimension-exact fake embedder.
+Queries MUST be embedded per the ingestion contract (exactly 1024 dimensions, same provider/model as ingestion — OpenAI `EMBEDDING_MODEL` requested at 1024 dimensions, or Ollama `OLLAMA_EMBEDDING_MODEL`) and bind against `halfvec(1024)`. Switching the embedding model requires a full reindex; vectors from different models MUST never mix. Tests MUST inject a dimension-exact fake embedder.
 
 #### Scenario: Query binds against stored embeddings
 
-- GIVEN stored embeddings as `halfvec(1536)`
+- GIVEN stored embeddings as `halfvec(1024)`
 - WHEN a query embedding is produced
-- THEN it has exactly 1536 dimensions and binds cleanly
+- THEN it has exactly 1024 dimensions and binds cleanly
 
 ### Requirement: Neutral empty results and safe errors
 
