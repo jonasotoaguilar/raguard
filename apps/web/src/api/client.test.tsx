@@ -131,6 +131,35 @@ describe('apiFetch guards', () => {
   })
 })
 
+describe('apiFetch content-type', () => {
+  it('keeps application/json for JSON bodies', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    await apiFetch('/api/chat', {
+      method: 'POST',
+      body: JSON.stringify({ query: 'hi' }),
+    })
+    expect(fetchMock.mock.calls[0][1].headers['content-type']).toBe(
+      'application/json',
+    )
+  })
+
+  it('leaves the browser boundary header untouched for FormData', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, { ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    const form = new FormData()
+    form.append(
+      'file',
+      new File(['%PDF-1.4 body'], 'upload.pdf', {
+        type: 'application/pdf',
+      }),
+    )
+    await apiFetch('/api/documents', { method: 'POST', body: form })
+    expect(fetchMock.mock.calls[0][1].body).toBe(form)
+    expect(fetchMock.mock.calls[0][1].headers['content-type']).toBeUndefined()
+  })
+})
+
 describe('redirects and roles', () => {
   it('builds /login with an encoded return path', () => {
     expect(loginRedirect('/chat')).toBe('/login?redirect=%2Fchat')

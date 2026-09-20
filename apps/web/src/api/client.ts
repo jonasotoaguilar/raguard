@@ -116,7 +116,13 @@ export async function apiFetch<T>(
   const headers: Record<string, string> = {
     ...((init.headers as Record<string, string>) ?? {}),
   }
-  if (init.body !== undefined && headers['content-type'] === undefined)
+  const isFormData =
+    typeof FormData !== 'undefined' && init.body instanceof FormData
+  if (
+    init.body !== undefined &&
+    !isFormData &&
+    headers['content-type'] === undefined
+  )
     headers['content-type'] = 'application/json'
   const res = await fetch(path, { ...init, headers, credentials: 'include' })
   if (res.status === 204) return undefined as T
