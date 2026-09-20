@@ -12,6 +12,7 @@ import {
   setUnauthorizedHandler,
 } from '../api/client'
 import { RootRoute } from '../routes/__root'
+import { ChatPage } from '../routes/chat'
 import { loginRoute } from '../routes/login'
 import { queryClient } from './query-client'
 import { EmptyState, ForbiddenState } from './shell'
@@ -36,12 +37,7 @@ const chatRoute = createRoute({
   getParentRoute: () => RootRoute,
   path: '/chat',
   beforeLoad: ({ location }) => protect(location.pathname),
-  component: () => (
-    <EmptyState
-      title="Chat arrives in ODD-2"
-      body="Sign-in and shell are live; the thread lands next."
-    />
-  ),
+  component: ChatPage,
 })
 
 const documentsRoute = createRoute({
