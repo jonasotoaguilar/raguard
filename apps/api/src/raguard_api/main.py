@@ -4,16 +4,16 @@ Builds the application from a settings object and a session factory: standard
 error handlers plus the auth (login), org administration, documents
 ingestion, retrieval search, and grounded chat routers. The documents router
 receives real adapters (boto3 S3 and Arq/Redis) constructed from settings,
-the retrieval router receives a lazily-connecting OpenAI embedder, and the
-chat router a lazy OpenAI completer; connections are lazy, so factory tests
-stay offline.
+the retrieval router receives a lazily-connecting provider embedder, and the
+chat router a lazy provider-selected completer (OpenAI default, Ollama opt-in);
+connections are lazy, so factory tests stay offline.
 """
 
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from raguard_api.auth.router import create_auth_router
-from raguard_api.chat.providers.openai import OpenAICompleter
+from raguard_api.chat.providers import create_completer
 from raguard_api.chat.router import create_chat_router
 from raguard_api.config import Settings, get_settings
 from raguard_api.documents.queue import ArqJobQueue
@@ -48,13 +48,7 @@ def create_app(*, settings: Settings, session_factory: async_sessionmaker[AsyncS
             session_factory=session_factory, settings=settings, embedder=embedder
         )
     )
-    completer = OpenAICompleter(
-        api_key=settings.openai_api_key,
-        model=settings.chat_model,
-        max_output_tokens=settings.chat_max_output_tokens,
-        timeout_seconds=settings.provider_timeout_seconds,
-        retries=settings.chat_retries,
-    )
+    completer = create_completer(settings=settings)
     app.include_router(
         create_chat_router(
             session_factory=session_factory,

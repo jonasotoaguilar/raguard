@@ -109,3 +109,10 @@ async def test_app_factory_wires_ollama_embedder_offline(migrated_db):
     settings = Settings(jwt_secret=JWT_SECRET, embedding_provider="ollama")
     app = create_app(settings=settings, session_factory=migrated_db.session_factory)
     assert _api_surface(app) == EXPECTED_SURFACE
+
+
+async def test_app_factory_wires_ollama_chat_provider_offline(migrated_db):
+    """Ollama chat selection composes without network (lazy client)."""
+    settings = Settings(jwt_secret=JWT_SECRET, chat_provider="ollama")
+    app = create_app(settings=settings, session_factory=migrated_db.session_factory)
+    assert _api_surface(app) == EXPECTED_SURFACE

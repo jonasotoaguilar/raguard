@@ -42,6 +42,16 @@ def validate_embedding_provider(*, provider: str, base_url: str) -> None:
         validate_ollama_base_url(base_url)
 
 
+def validate_chat_provider(*, provider: str, base_url: str, ollama_chat_model: str) -> None:
+    """Startup guard: the chat provider is known; Ollama reuses the validated base URL."""
+    if provider not in ("openai", "ollama"):
+        raise ValueError(f"chat_provider unknown: {provider!r}; require 'openai' or 'ollama'")
+    if provider == "ollama":
+        validate_ollama_base_url(base_url)
+        if not ollama_chat_model.strip():
+            raise ValueError("ollama_chat_model must not be blank")
+
+
 def validate_retrieval_bounds(
     *,
     rrf_k: int,
@@ -125,15 +135,23 @@ class Settings(BaseSettings):
     # --- Chat completion defaults/bounds (design: gpt-4o-mini, max 500 output
     # tokens, at most 2 application retries; the completer disables SDK retries
     # and reuses provider_timeout_seconds). Failures surface as typed errors
-    # for the router's safe 503 envelope. ---
+    # for the router's safe 503 envelope. ODD-2 adds independent chat provider
+    # selection (OpenAI default, Ollama opt-in reusing ollama_base_url). ---
     chat_model: str = "gpt-4o-mini"
     chat_max_output_tokens: int = 500
     chat_retries: int = 2
+    chat_provider: str = "openai"
+    ollama_chat_model: str = "qwen3:1.7b"
 
     model_config = {"extra": "ignore"}
 
     def model_post_init(self, __context: Any) -> None:
         validate_embedding_provider(provider=self.embedding_provider, base_url=self.ollama_base_url)
+        validate_chat_provider(
+            provider=self.chat_provider,
+            base_url=self.ollama_base_url,
+            ollama_chat_model=self.ollama_chat_model,
+        )
         validate_chat_bounds(
             model=self.chat_model,
             max_output_tokens=self.chat_max_output_tokens,
