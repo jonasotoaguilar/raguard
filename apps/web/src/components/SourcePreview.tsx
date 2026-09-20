@@ -48,6 +48,22 @@ export function SourcePreview({
     }
   }, [])
 
+  // Close on Escape even after focus has fallen outside the dialog (e.g.
+  // focus lost to body after a disabled Previous/Next button). The dialog
+  // onKeyDown handles the focused-inside case with stopPropagation so this
+  // document listener only fires independently when focus is outside.
+  useEffect(() => {
+    function handleDocumentKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        onClose()
+      }
+    }
+    document.addEventListener('keydown', handleDocumentKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleDocumentKeyDown)
+    }
+  }, [onClose])
+
   function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
     if (event.key === 'Escape') {
       event.stopPropagation()

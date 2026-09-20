@@ -182,7 +182,9 @@ export function AppShell({
     <div style={{ background: tokens.surface, color: tokens.ink }}>
       <a href="#main">Skip to content</a>
       <header>
-        <output aria-label="Active tenant">{tenantName}</output>
+        <span role="note" aria-label="Active tenant">
+          {tenantName}
+        </span>
       </header>
       <nav aria-label="Primary">
         <ul>
