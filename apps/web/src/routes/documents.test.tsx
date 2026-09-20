@@ -67,7 +67,7 @@ afterEach(() => {
 describe('DocumentsPage list', () => {
   it('renders the heading, scoped headers, chips, and detail links', async () => {
     listMock.mockResolvedValue({ documents: [INDEXED, FAILED] } as never)
-    const { container } = renderPage()
+    renderPage()
 
     expect(
       screen.getByRole('heading', { name: /documents/i }),
@@ -214,6 +214,40 @@ describe('DocumentsPage upload', () => {
     // Already listed documents survive the failed upload.
     expect(screen.getByText('alpha.pdf')).toBeInTheDocument()
     expect(uploadMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes after a mixed batch where one upload succeeds and one rejects', async () => {
+    listMock
+      .mockResolvedValueOnce({ documents: [INDEXED] } as never)
+      .mockResolvedValueOnce({ documents: [INDEXED, PENDING] } as never)
+    uploadMock
+      .mockResolvedValueOnce({ ...PENDING, name: 'good.md' } as never)
+      .mockRejectedValueOnce(
+        new ApiError({
+          status: 400,
+          code: 'invalid_request',
+          message: 'Unsupported file type',
+        }),
+      )
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() =>
+      expect(screen.getByText('alpha.pdf')).toBeInTheDocument(),
+    )
+
+    await user.upload(screen.getByTestId('dropzone-input'), [
+      mdFile('good.md'),
+      mdFile('bad.md'),
+    ])
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      /uploaded 1 of 2 files/i,
+    )
+    await waitFor(() =>
+      expect(screen.getByText('gamma.pdf')).toBeInTheDocument(),
+    )
+    expect(uploadMock).toHaveBeenCalledTimes(2)
+    expect(listMock).toHaveBeenCalledTimes(2)
   })
 
   it('prevents duplicate sends while an upload is in flight', async () => {
