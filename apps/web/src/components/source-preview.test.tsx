@@ -105,9 +105,7 @@ describe('SourcePreview', () => {
   it('calls onClose from the close button and restores focus to the marker trigger', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()
-    const { rerender, unmount } = render(
-      <button type="button">marker trigger</button>,
-    )
+    const { rerender } = render(<button type="button">marker trigger</button>)
     const trigger = screen.getByRole('button', { name: /marker trigger/i })
     trigger.focus()
     expect(trigger).toHaveFocus()
