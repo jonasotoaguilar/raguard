@@ -19,11 +19,14 @@ from openai import (
     RateLimitError,
 )
 from raguard_api.chat.contracts import ChatCompleter, CompletionPrompt
+from raguard_api.chat.providers import create_completer
+from raguard_api.chat.providers.ollama import OllamaCompleter
 from raguard_api.chat.providers.openai import (
     CompletionError,
     OpenAICompleter,
     create_openai_client,
 )
+from raguard_api.config import Settings
 
 pytestmark = pytest.mark.unit
 
@@ -177,3 +180,39 @@ def test_non_retryable_provider_errors_fail_immediately():
 def test_construction_rejects_invalid_bounds(kwarg, value):
     with pytest.raises(ValueError):
         _completer(**{kwarg: value})
+
+
+# ---------------------------------------------------------------------------
+# Factory: provider selection from settings, OpenAI default, offline wiring
+# ---------------------------------------------------------------------------
+
+
+def _settings(**overrides):
+    return Settings(jwt_secret="a" * 32, **overrides)
+
+
+def test_factory_defaults_to_openai():
+    assert isinstance(create_completer(settings=_settings()), OpenAICompleter)
+
+
+def test_factory_selects_ollama_from_settings():
+    completer = create_completer(settings=_settings(chat_provider="ollama"))
+
+    assert isinstance(completer, OllamaCompleter)
+
+
+def test_factory_rejects_unknown_provider():
+    import types
+
+    settings = types.SimpleNamespace(
+        chat_provider="cohere",
+        openai_api_key="sk-test",
+        chat_model="gpt-4o-mini",
+        ollama_base_url="http://127.0.0.1:11434",
+        ollama_chat_model="qwen3:1.7b",
+        chat_max_output_tokens=500,
+        provider_timeout_seconds=30.0,
+        chat_retries=2,
+    )
+    with pytest.raises(ValueError, match="chat_provider"):
+        create_completer(settings=settings)

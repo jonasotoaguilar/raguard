@@ -38,11 +38,21 @@ def create_openai_client(*, api_key: str, timeout_seconds: float) -> OpenAI:
     return OpenAI(api_key=api_key, timeout=timeout_seconds, max_retries=0)
 
 
+def retryable_http_status(status_code: int) -> bool:
+    """Shared retry policy: only 429 and 5xx statuses are worth a bounded retry."""
+    return status_code == 429 or status_code >= 500
+
+
+def backoff_delay_seconds(attempt: int) -> float:
+    """Shared bounded exponential backoff for application-level provider retries."""
+    return min(_BACKOFF_BASE_SECONDS * 2**attempt, _BACKOFF_MAX_SECONDS)
+
+
 def _retryable(exc: Exception) -> bool:
     """Only timeout/connection/429/5xx failures are worth a bounded retry."""
     if isinstance(exc, (APITimeoutError, APIConnectionError, RateLimitError)):
         return True
-    return isinstance(exc, APIStatusError) and exc.status_code >= 500
+    return isinstance(exc, APIStatusError) and retryable_http_status(exc.status_code)
 
 
 class OpenAICompleter:
@@ -99,5 +109,5 @@ class OpenAICompleter:
             except Exception as exc:
                 if not _retryable(exc) or attempts >= self._retries:
                     raise CompletionError(_GENERIC_FAILURE) from None
-                self._sleep(min(_BACKOFF_BASE_SECONDS * 2**attempts, _BACKOFF_MAX_SECONDS))
+                self._sleep(backoff_delay_seconds(attempts))
                 attempts += 1

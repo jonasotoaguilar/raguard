@@ -51,8 +51,8 @@ graph TD
     end
 
     subgraph External
-        LLM["LLM provider (OpenAI / Anthropic)"]
-        Emb["Embedding provider (OpenAI default)"]
+        LLM["LLM provider (OpenAI / Ollama, selectable)"]
+        Emb["Embedding provider (OpenAI / Ollama, selectable)"]
     end
 
     Browser --> Caddy
@@ -194,7 +194,7 @@ erDiagram
     }
 ```
 
-> The ERD is the **implemented target model**. `tenants`/`users`/`roles`/`memberships`/`documents`/`chunks` are live with migrations `0001_identity_tables` and `0002_documents_chunks` (HNSW `halfvec(1536)` cosine, GIN `tsvector` `simple`); `chunks` carries both the embedding vector and the FTS `tsvector` so both retrieval signals stay colocated. `conversations`/`messages` (and `messages.citations` as the provenance ledger) remain planned — chat persistence, history, and retention are open decisions and no chat write persists today (`POST /api/chat` is request-scoped, `POST /api/search` is stateless).
+> The ERD is the **implemented target model**. `tenants`/`users`/`roles`/`memberships`/`documents`/`chunks` are live with migrations `0001_identity_tables`, `0002_documents_chunks`, and fail-closed `0003_embedding_1024` (HNSW `halfvec(1024)` cosine, GIN `tsvector` `simple`; populated 1536-dim tables refuse migration until reindexed from source); `chunks` carries both the embedding vector and the FTS `tsvector` so both retrieval signals stay colocated. `conversations`/`messages` (and `messages.citations` as the provenance ledger) remain planned — chat persistence, history, and retention are open decisions and no chat write persists today (`POST /api/chat` is request-scoped, `POST /api/search` is stateless).
 
 ## Component Details **[ALWAYS]**
 
@@ -245,7 +245,7 @@ erDiagram
 
 ### Provider Adapters — OpenAI live, Anthropic reserved
 
-- **Technology**: Provider-neutral chat adapter and replaceable embedding adapter ([ADR-0005](docs/adr/0005-provider-neutral-model-adapters.md)) — **live**: `OpenAIEmbedder` (`retrieval/embeddings.py`) for retrieval and ingestion, `OpenAICompleter` (`chat/providers/openai.py`) for chat (OpenAI-only for MVP, injectable `FakeEmbedder`/`FakeCompleter` in tests); **reserved**: Anthropic chat adapter not yet implemented (Anthropic has no embeddings)
+- **Technology**: Provider-neutral chat adapter and replaceable embedding adapter ([ADR-0005](docs/adr/0005-provider-neutral-model-adapters.md)) — **live**: `OpenAIEmbedder`/`OllamaEmbedder` (`retrieval/embeddings.py`, `apps/worker/.../embeddings.py`) for retrieval and ingestion and `OpenAICompleter`/`OllamaCompleter` (`chat/providers/`) for chat, selected independently via `EMBEDDING_PROVIDER`/`CHAT_PROVIDER` (`openai` default, `ollama` opt-in; OpenAI `text-embedding-3-small` requested at 1024 dims, Ollama `qwen3-embedding:0.6b` / `qwen3:1.7b` via `OLLAMA_BASE_URL`; injectable `FakeEmbedder`/`FakeCompleter` in tests); **reserved**: Anthropic chat adapter not yet implemented (Anthropic has no embeddings)
 - **Responsibility**: Isolate external model APIs behind one internal interface; system prompt never merged with untrusted document content; chat prompt assembly lives outside the adapter (`chat/prompts.py`)
 - **Failure modes**: Rate limits/outages → bounded retries + backoff in API/worker (chat: `CHAT_RETRIES` 0..2, disabled SDK retries, `PROVIDER_TIMEOUT_SECONDS`; retrieval: `ServiceUnavailableError` 503); credentials via env/secret manager, never in code or manifests
 
@@ -379,7 +379,7 @@ Targets marked *draft* come from the PRD and are confirmed once the evaluation h
 
 ## Deployment & Configuration Principles
 
-- **Local topology (current evidence at `707245a`)**: `infra/compose.yaml` provides `pgvector/pgvector:0.8.6-pg17` (PostgreSQL `shm_size` 1 GB for pgvector HNSW index builds), `redis:8.10.0-alpine`, `minio/minio:RELEASE.2025-09-07T16-13-09Z`, plus a Caddy proxy gated behind the `proxy` profile and a `worker` service (`apps/worker/Dockerfile` → `uv run arq raguard_worker.settings.WorkerSettings`) with `minio-init` bucket provisioning. MinIO is local development only: the upstream project is unmaintained (its repository points to AIStor) and the image is pinned to the last verifiable published image; revalidate before any non-local use — S3/R2 are the production targets. The API service is not yet a compose service (run via `uv` locally); Caddy routes `/` → web and `/api` → API once those compose services are wired. The web service remains scaffold-only.
+- **Local topology (current evidence at `707245a`)**: `infra/compose.yaml` provides `pgvector/pgvector:0.8.6-pg17` (PostgreSQL `shm_size` 1 GB for pgvector HNSW index builds), `redis:8.10.0-alpine`, `minio/minio:RELEASE.2025-09-07T16-13-09Z`, plus a Caddy proxy gated behind the `proxy` profile and a `worker` service (`apps/worker/Dockerfile` → `uv run arq raguard_worker.settings.WorkerSettings`) with `minio-init` bucket provisioning. An opt-in `ollama` service (`ollama/ollama:0.34.1`, `local-ai` profile, `ollama` named volume, loopback-only port, in-image `ollama list` healthcheck) serves the local provider path; the compose `worker` reaches it as `http://ollama:11434` while host-side processes use `http://127.0.0.1:11434` (see README "Local AI (Ollama)"). MinIO is local development only: the upstream project is unmaintained (its repository points to AIStor) and the image is pinned to the last verifiable published image; revalidate before any non-local use — S3/R2 are the production targets. The API service is not yet a compose service (run via `uv` locally); Caddy routes `/` → web and `/api` → API once those compose services are wired. The web service remains scaffold-only.
 - **Production topology**: same services, with S3 (or R2) instead of MinIO and provider keys from a secret manager; Caddy terminates TLS. No architectural difference — storage and providers are adapter-abstracted ([ADR-0006](docs/adr/0006-s3-compatible-object-storage.md), [ADR-0005](docs/adr/0005-provider-neutral-model-adapters.md)).
 - **Configuration**: environment-based (`.env.example` present and lists worker, retrieval, and chat bounds such as `CHUNK_SIZE`, `RRF_K`, `RETRIEVAL_SEMANTIC_MAX_DISTANCE`, `CHAT_MODEL`, `CHAT_RETRIES`; never commit real credentials); versions verified at setup time — lockfiles and pinned images are authoritative.
 - **Secrets**: provider credentials and JWT signing keys in env/secret manager; `.env` gitignored.

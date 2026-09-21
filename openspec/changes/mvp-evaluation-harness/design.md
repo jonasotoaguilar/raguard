@@ -13,7 +13,7 @@
 | Package | `apps/eval` vs tests-only | `apps/eval/src/raguard_eval/`; `raguard-eval = raguard_eval.cli:main` |
 | CLI / deps | argparse vs click; yaml vs json | stdlib argparse + JSON; `eval/config.json` supersedes proposed YAML |
 | Imports | routers vs seams | Allow: `AuthorizationScope`, `CHAT_USE`, `retrieve_chunks`, `build_completion_prompt`, `SYSTEM_PROMPT`, `UNTRUSTED_SOURCES_*`, `verify_citations`, `CitationVerificationError`, `FakeCompleter`, `EMBEDDING_DIMENSION`, `Tenant`/`Document`/`Chunk`/`DocumentStatus`, `Settings`. Never routers, OpenAI, pytest fixtures |
-| Embedder | `FakeEmbedder` collapses seeds | SHA-256(token) → axis `% 1536`, L2; per-case probes |
+| Embedder | `FakeEmbedder` collapses seeds | SHA-256(token) → axis `% 1024` (canonical `EMBEDDING_DIMENSION`; historical pre-`0003`: `% 1536`), L2; per-case probes |
 | Database | import `migrated_db` vs clone | `raguard_eval_{hex12}` only; Alembic `apps/api/alembic.ini`; `DROP … WITH (FORCE)` in `finally` |
 | Thresholds / live | product Settings vs eval; `--live` | `eval/config.json` + manifest; dummy `jwt_secret` unreported; no `--live` |
 

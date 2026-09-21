@@ -47,7 +47,7 @@ def test_embedded_texts_have_exact_dimension() -> None:
     assert len(vectors) == 2
     for vector in vectors:
         assert len(vector) == EMBEDDING_DIMENSION
-        assert len(vector) == 1536
+        assert len(vector) == 1024
         assert all(isinstance(value, float) for value in vector)
 
 
