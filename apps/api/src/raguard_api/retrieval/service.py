@@ -65,7 +65,7 @@ async def _keyword_candidates(
     scope: AuthorizationScope,
     limit: int,
     query: str,
-    visibility=None,
+    visibility,
 ) -> list[Candidate]:
     statement = build_keyword_query(
         tenant_predicate=scope.tenant_predicate, limit=limit, visibility_predicate=visibility
@@ -82,7 +82,7 @@ async def _semantic_candidates(
     ef_search: int,
     max_distance: float,
     embedding: list[float],
-    visibility=None,
+    visibility,
 ) -> list[Candidate]:
     statement = build_semantic_query(
         tenant_predicate=scope.tenant_predicate,

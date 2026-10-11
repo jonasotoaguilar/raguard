@@ -122,6 +122,33 @@ def _escape_label(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
+class _Histogram:
+    """Fixed-bucket Prometheus histogram: O(1) memory per series.
+
+    Keeps one counter per finite bucket plus the implicit ``+Inf`` slot, so a
+    process that serves millions of requests holds the same memory as one
+    that serves ten.
+    """
+
+    __slots__ = ("_counts", "count", "total")
+
+    def __init__(self) -> None:
+        self._counts = [0] * len(HISTOGRAM_BUCKETS)
+        self.count = 0
+        self.total = 0.0
+
+    def observe(self, value: float) -> None:
+        self.count += 1
+        self.total += value
+        for index, bucket in enumerate(HISTOGRAM_BUCKETS):
+            if value <= bucket:
+                self._counts[index] += 1
+
+    def cumulative(self) -> list[int]:
+        """Per-bucket cumulative counts in Prometheus ``le`` semantics."""
+        return list(self._counts)
+
+
 class MetricsRegistry:
     """Minimal in-process Prometheus registry (no new dependencies).
 
@@ -132,7 +159,11 @@ class MetricsRegistry:
 
     def __init__(self) -> None:
         self._requests: dict[tuple[str, str, str], int] = {}
-        self._durations: dict[tuple[str, str], list[float]] = {}
+        # Fixed-bucket aggregation: memory is O(series), never O(requests).
+        # Each series keeps one counter per HISTOGRAM_BUCKETS entry plus the
+        # +Inf overflow slot, so a long-running process cannot grow without
+        # bound (the pre-fix version appended every raw sample forever).
+        self._durations: dict[tuple[str, str], _Histogram] = {}
         self._ready = 1
         self._rate_limited = 0
 
@@ -141,8 +172,11 @@ class MetricsRegistry:
     ) -> None:
         key = (method, path_template, str(status))
         self._requests[key] = self._requests.get(key, 0) + 1
-        series = self._durations.setdefault((method, path_template), [])
-        series.append(max(0.0, float(duration_seconds)))
+        histogram = self._durations.get((method, path_template))
+        if histogram is None:
+            histogram = _Histogram()
+            self._durations[(method, path_template)] = histogram
+        histogram.observe(max(0.0, float(duration_seconds)))
 
     def set_ready(self, ready: bool) -> None:
         self._ready = 1 if ready else 0
@@ -174,23 +208,20 @@ class MetricsRegistry:
             "# TYPE raguard_http_request_duration_seconds histogram",
         ]
         for method, template in sorted(self._durations):
-            observations = self._durations[(method, template)]
+            histogram = self._durations[(method, template)]
             labels = f'method="{_escape_label(method)}",path_template="{_escape_label(template)}"'
-            for bucket in HISTOGRAM_BUCKETS:
-                cumulative = sum(1 for value in observations if value <= bucket)
+            for bucket, cumulative in zip(HISTOGRAM_BUCKETS, histogram.cumulative(), strict=True):
                 lines.append(
                     f"raguard_http_request_duration_seconds_bucket{{{labels},"
                     f'le="{bucket}"}} {cumulative}'
                 )
             lines.append(
                 f'raguard_http_request_duration_seconds_bucket{{{labels},le="+Inf"}}'
-                f" {len(observations)}"
+                f" {histogram.count}"
             )
+            lines.append(f"raguard_http_request_duration_seconds_sum{{{labels}}} {histogram.total}")
             lines.append(
-                f"raguard_http_request_duration_seconds_sum{{{labels}}} {float(sum(observations))}"
-            )
-            lines.append(
-                f"raguard_http_request_duration_seconds_count{{{labels}}} {len(observations)}"
+                f"raguard_http_request_duration_seconds_count{{{labels}}} {histogram.count}"
             )
         lines += [
             "# HELP raguard_ready Readiness gauge (1 ready, 0 degraded).",

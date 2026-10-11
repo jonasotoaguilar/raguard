@@ -261,3 +261,28 @@ async def test_observability_paths_bypass_rate_limiting() -> None:
         assert (await client.get("/health")).status_code == 200
         assert (await client.get("/ready")).status_code in (200, 503)
         assert (await client.get("/metrics")).status_code == 200
+
+
+async def test_metrics_memory_is_bounded_across_many_requests() -> None:
+    """Regression (audit finding): raw samples must never accumulate.
+
+    The pre-fix registry appended every duration to a list that was never
+    pruned, so a long-running process grew without bound. The histogram now
+    keeps fixed buckets, so storage is O(series) regardless of request count.
+    """
+    from raguard_api.observability import HISTOGRAM_BUCKETS, MetricsRegistry
+
+    registry = MetricsRegistry()
+    for index in range(10_000):
+        registry.observe_request(
+            method="GET",
+            path_template="/api/documents/{id}",
+            status=200,
+            duration_seconds=(index % 50) / 100.0,
+        )
+
+    series = registry._durations[("GET", "/api/documents/{id}")]
+    # Exactly one counter per finite bucket — no per-request growth.
+    assert len(series._counts) == len(HISTOGRAM_BUCKETS)
+    assert series.count == 10_000
+    assert registry.render().count("_bucket{") == len(HISTOGRAM_BUCKETS) + 1
