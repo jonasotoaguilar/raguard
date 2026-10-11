@@ -100,6 +100,7 @@ def validate_rate_limit_bounds(*, requests: int, window_seconds: int) -> None:
 
 
 class Settings(BaseSettings):
+    log_json: bool = True
     jwt_secret: str = Field(min_length=32)
     jwt_issuer: str = "raguard"
     jwt_audience: str = "raguard-api"

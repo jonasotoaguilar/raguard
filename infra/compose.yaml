@@ -227,6 +227,16 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+    # Liveness via the dependency-free /health endpoint (stdlib urllib: the
+    # slim image ships no curl/wget).
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     restart: unless-stopped
     networks: [raguard]
 

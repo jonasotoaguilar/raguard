@@ -29,12 +29,19 @@ from raguard_api.documents.queue import ArqJobQueue
 from raguard_api.documents.router import create_documents_router
 from raguard_api.documents.storage import S3ObjectStore, create_s3_client
 from raguard_api.errors import RateLimitError, register_error_handlers
+from raguard_api.observability import (
+    CheckFn,
+    ObservabilityMiddleware,
+    configure_logging,
+    create_observability_router,
+    get_default_registry,
+)
 from raguard_api.org.router import create_org_router
 from raguard_api.ratelimit import RateLimiter, build_rate_limiter
 from raguard_api.retrieval.embeddings import create_embedder
 from raguard_api.retrieval.router import create_retrieval_router
 
-_EXCLUDED_PATHS = frozenset({"/health", "/metrics"})
+_EXCLUDED_PATHS = frozenset({"/health", "/ready", "/metrics"})
 
 
 def _resolve_identity(request: Request, settings: Settings) -> tuple[str, str]:
@@ -93,6 +100,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             request.app.state, "rate_limiter", None
         )
         if limiter is None:  # miswired app: fail open is forbidden, fail safe
+            get_default_registry().inc_rate_limited()
             exc = RateLimitError()
             return JSONResponse(
                 status_code=exc.status_code,
@@ -102,6 +110,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         tenant, subject = _resolve_identity(request, settings)
         decision = await limiter.check(tenant=tenant, subject=subject)
         if not decision.allowed:
+            get_default_registry().inc_rate_limited()
             exc = RateLimitError(retry_after_seconds=decision.retry_after_seconds)
             return JSONResponse(
                 status_code=exc.status_code,
@@ -126,12 +135,24 @@ def create_app(
     settings: Settings,
     session_factory: async_sessionmaker[AsyncSession],
     limiter: RateLimiter | None = None,
+    observability_checks: dict[str, CheckFn] | None = None,
 ) -> FastAPI:
     """Build the raguard API application with the standard error envelope."""
     app = FastAPI(title="raguard API", version="0.1.0")
     register_error_handlers(app)
     app.dependency_overrides[get_settings] = lambda: settings
+    configure_logging(json_format=settings.log_json)
     attach_rate_limiting(app, settings, limiter=limiter)
+    # Added last so it runs outermost: denials from the rate limiter above
+    # are still observed, logged, and stamped with the request id.
+    app.add_middleware(ObservabilityMiddleware)
+    app.include_router(
+        create_observability_router(
+            session_factory=session_factory,
+            redis_url=settings.job_queue_redis_url,
+            checks=observability_checks,
+        )
+    )
     app.include_router(create_auth_router(settings=settings, session_factory=session_factory))
     app.include_router(create_org_router(session_factory=session_factory))
     store = S3ObjectStore(create_s3_client(settings), bucket=settings.object_store_bucket)

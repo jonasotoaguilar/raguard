@@ -25,4 +25,4 @@ RUN uv sync --frozen --no-dev --package raguard-api
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-CMD ["uvicorn", "raguard_api.main:create_default_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "raguard_api.main:create_default_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

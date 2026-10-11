@@ -118,7 +118,7 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled_error(request: Request, exc: Exception):
-        request_id = uuid.uuid4().hex
+        request_id = getattr(request.state, "request_id", None) or uuid.uuid4().hex
         logger.exception("unhandled error request_id=%s", request_id)
         return JSONResponse(
             status_code=500,
