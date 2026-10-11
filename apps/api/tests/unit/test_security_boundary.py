@@ -75,19 +75,24 @@ def test_injection_shaped_role_names_receive_no_grants(role_name):
 
 
 async def test_resolver_scope_contains_exactly_the_database_capability_set():
-    class _Result:
-        def __init__(self, value):
-            self._value = value
+    class _Row:
+        def __init__(self, role_id, capabilities):
+            self.role_id = role_id
+            self.capabilities = capabilities
 
-        def scalar_one_or_none(self):
-            return self._value
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
 
     class _Session:
-        def __init__(self, value):
-            self._value = value
+        def __init__(self, rows):
+            self._rows = rows
 
         async def execute(self, statement):
-            return _Result(self._value)
+            return _Result(self._rows)
 
         async def __aenter__(self):
             return self
@@ -96,13 +101,15 @@ async def test_resolver_scope_contains_exactly_the_database_capability_set():
             return False
 
     class _Factory:
-        def __init__(self, value):
-            self._value = value
+        def __init__(self, rows):
+            self._rows = rows
 
         def __call__(self):
-            return _Session(self._value)
+            return _Session(self._rows)
 
-    resolver = AuthorizationResolver(session_factory=_Factory([CORPUS_VIEW, CHAT_USE]))
+    resolver = AuthorizationResolver(
+        session_factory=_Factory([_Row(uuid.uuid4(), [CORPUS_VIEW, CHAT_USE])])
+    )
     scope = await resolver.resolve(_claims())
     assert scope.tenant_id == TID
     assert scope.user_id == SUB

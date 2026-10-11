@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from raguard_api.authorization.scope import AuthorizationScope
 from raguard_api.config import Settings
 from raguard_api.documents.contracts import Embedder
+from raguard_api.documents.visibility import scope_visibility_clause
 from raguard_api.retrieval.contracts import Candidate, FusedResult
 from raguard_api.retrieval.fusion import rrf_fusion
 from raguard_api.retrieval.queries import (
@@ -38,8 +39,13 @@ async def retrieve_chunks(
     """
     limit = top_k if top_k is not None else settings.retrieval_top_k
     vectors = await asyncio.to_thread(embedder.embed, [query])
+    # F3: the visibility clause travels with the scope into both signals so
+    # restricted chunks without a grant are filtered in SQL before ranking.
+    visibility = scope_visibility_clause(scope)
     keyword, semantic = await asyncio.gather(
-        _keyword_candidates(session_factory, scope, settings.retrieval_candidates, query),
+        _keyword_candidates(
+            session_factory, scope, settings.retrieval_candidates, query, visibility
+        ),
         _semantic_candidates(
             session_factory,
             scope,
@@ -47,6 +53,7 @@ async def retrieve_chunks(
             settings.retrieval_ef_search,
             settings.retrieval_semantic_max_distance,
             vectors[0],
+            visibility,
         ),
     )
     fused = rrf_fusion(keyword, semantic, k=settings.rrf_k)
@@ -58,8 +65,11 @@ async def _keyword_candidates(
     scope: AuthorizationScope,
     limit: int,
     query: str,
+    visibility,
 ) -> list[Candidate]:
-    statement = build_keyword_query(tenant_predicate=scope.tenant_predicate, limit=limit)
+    statement = build_keyword_query(
+        tenant_predicate=scope.tenant_predicate, limit=limit, visibility_predicate=visibility
+    )
     async with session_factory() as session:
         rows = (await session.execute(statement, {"query": query})).all()
     return [_candidate(row) for row in rows]
@@ -72,9 +82,13 @@ async def _semantic_candidates(
     ef_search: int,
     max_distance: float,
     embedding: list[float],
+    visibility,
 ) -> list[Candidate]:
     statement = build_semantic_query(
-        tenant_predicate=scope.tenant_predicate, limit=limit, max_distance=max_distance
+        tenant_predicate=scope.tenant_predicate,
+        limit=limit,
+        max_distance=max_distance,
+        visibility_predicate=visibility,
     )
     async with session_factory() as session:
         await session.execute(build_ef_search_statement(ef_search=ef_search))

@@ -4,7 +4,7 @@ Multi-tenant conversational RAG over internal documents: ask questions in natura
 
 ## Status
 
-> **MVP retrieval, chat, offline precision evaluation, and web UI delivered on `main`.** `mvp-authz-foundation`, `mvp-document-ingestion`, `mvp-retrieval-rrf`, `mvp-chat-citations`, and `mvp-evaluation-harness` are complete: the change is archived under `openspec/changes/archive/2026-10-11-mvp-evaluation-harness/` and the spec is promoted to `openspec/specs/evaluation/spec.md` (PRs #32/#38/#39/#41/#42/#43/#45/#46 MERGED; work-unit `dcca1ae`). Delivered on `main`: tenant identity with JWT/RBAC and `raguard-bootstrap` first-tenant flow, authorized PDF/Markdown upload with tenant-scoped list/detail, Redis/Arq ingestion pipeline (parsing, chunking, provider-neutral embeddings, atomic indexing/failure handling, bounded retries, cleanup), permission-filtered hybrid retrieval (`POST /api/search` — FTS `simple` + `halfvec(1024)` cosine via pgvector HNSW, RRF `k=60` fused at the application layer, tenant predicate before ranking), bounded request-scoped chat (`POST /api/chat` — static grounded prompt with untrusted-source delimiters, selectable OpenAI/Ollama completer with bounded timeout/retries/tokens, neutral `{answer: null, citations: []}` on empty/no-match, `[n]` citation verification against the exact authorized retrieved set, 503 envelope on provider or citation failure, zero provider calls on neutral paths), offline precision evaluation harness (`uv run raguard-eval` over `eval/datasets/mvp-v1`, CI-gated), and the web UI (`apps/web` — chat with citations and source preview, documents library/detail/upload, admin organization views; PRs #47–#61 and #64 MERGED). Document deletion and per-document grants remain planned.
+> **MVP retrieval, chat, offline precision evaluation, and web UI delivered on `main`.** `mvp-authz-foundation`, `mvp-document-ingestion`, `mvp-retrieval-rrf`, `mvp-chat-citations`, and `mvp-evaluation-harness` are complete: the change is archived under `openspec/changes/archive/2026-10-11-mvp-evaluation-harness/` and the spec is promoted to `openspec/specs/evaluation/spec.md` (PRs #32/#38/#39/#41/#42/#43/#45/#46 MERGED; work-unit `dcca1ae`). Delivered on `main`: tenant identity with JWT/RBAC and `raguard-bootstrap` first-tenant flow, authorized PDF/Markdown upload with tenant-scoped list/detail, Redis/Arq ingestion pipeline (parsing, chunking, provider-neutral embeddings, atomic indexing/failure handling, bounded retries, cleanup), permission-filtered hybrid retrieval (`POST /api/search` — FTS `simple` + `halfvec(1024)` cosine via pgvector HNSW, RRF `k=60` fused at the application layer, tenant predicate before ranking), bounded request-scoped chat (`POST /api/chat` — static grounded prompt with untrusted-source delimiters, selectable OpenAI/Ollama completer with bounded timeout/retries/tokens, neutral `{answer: null, citations: []}` on empty/no-match, `[n]` citation verification against the exact authorized retrieved set, 503 envelope on provider or citation failure, zero provider calls on neutral paths), offline precision evaluation harness (`uv run raguard-eval` over `eval/datasets/mvp-v1`, CI-gated), and the web UI (`apps/web` — chat with citations and source preview, documents library/detail/upload, admin organization views; PRs #47–#61 and #64 MERGED). Document deletion is delivered (`DELETE /api/documents/{id}` + web Delete with confirm) along with per-document grants (`documents.visibility` tenant/restricted + `document_grants` to users/roles, migration `0005`, enforced in retrieval SQL before ranking and on every document surface).
 
 ## What Is This?
 
@@ -29,7 +29,7 @@ It is designed to run with standard, replaceable components (PostgreSQL, Redis, 
 | Hybrid retrieval | Embeddings + PostgreSQL FTS/vector search, RRF fusion (`k=60`, candidates 50, deterministic tie-break) | Implemented — `POST /api/search`, `apps/api/src/raguard_api/retrieval/` |
 | Permission-filtered retrieval | Chunks a user cannot access never reach generation (tenant predicate before ranking, `AuthorizationScope`) | Implemented — shared `retrieve_chunks` for search and chat |
 | Verifiable citations | Answers cite retrievable chunks with links back to the source (`[n]` → verified `Citation`) | Implemented — `POST /api/chat`, `apps/api/src/raguard_api/chat/citations.py` |
-| Chat interface | API chat with grounded answers plus web conversation UI | Implemented (API + web) — `POST /api/chat` live, `apps/web` chat/documents/admin routes delivered |
+| Chat interface | API chat with grounded answers plus web conversation UI | Implemented (API + web) — `POST /api/chat` live (stateless by default, optional `conversation_id` persistence), `POST/GET/DELETE /api/conversations` history, `apps/web` chat/documents/admin routes delivered |
 | Precision evaluation | Offline harness to measure retrieval/generation quality before shipping changes | Implemented — archived `2026-10-11-mvp-evaluation-harness`, spec `openspec/specs/evaluation/spec.md` |
 | Prompt-injection protection | Document content cannot override system or user instructions (sources as delimited untrusted data) | Implemented — static `SYSTEM_PROMPT`, `UNTRUSTED_SOURCES_START/END`, adversarial gates |
 
@@ -100,7 +100,21 @@ docker compose -f infra/compose.yaml config
 docker compose -f infra/compose.yaml up -d
 ```
 
-The Caddy reverse proxy is gated behind the `proxy` profile (`docker compose --profile proxy up`); it routes to `apps/api` and `apps/web`. Neither runs in the default stack (compose wires infrastructure plus the worker; the API runs on the host via `uv`), so the proxy profile becomes useful once those services run alongside it.
+The Caddy reverse proxy is gated behind the `proxy` profile (`docker compose --profile proxy up`); it routes `/api/*` to `api:8000` and everything else to `web:5173`. Neither backend runs in the default stack (compose wires infrastructure plus the worker; the API runs on the host via `uv`), so the proxy profile becomes useful once those services run alongside it.
+
+### Full Application Stack (`app` profile)
+
+The API and web run as compose services behind Caddy, both gated behind the `app` profile — the default (profile-less) stack is unchanged (PostgreSQL, Redis, MinIO, bucket init, worker).
+
+```bash
+docker compose -f infra/compose.yaml --profile app up -d --build
+```
+
+- `api` (`apps/api/Dockerfile`): uvicorn serving the `create_default_app` factory from `apps/api/src/raguard_api/main.py` on `api:8000`. Environment mirrors the worker (service-network URLs) plus JWT/session-cookie, provider/chat, retrieval, and `RATE_LIMIT_*` settings; all values come from `.env` (no new variables — `.env.example` already documents them). No host port is published: Caddy is the sole ingress.
+- `web` (`apps/web/Dockerfile`): Vite dev server on `web:5173` (decision: dev server, not a static build — the Caddyfile already expects `web:5173`, the client calls the API over same-origin relative `/api/*` paths so no backend URL is baked in, and session cookies stay first-party). Source is baked into the image; refresh with `docker compose -f infra/compose.yaml --profile app build web`.
+- `caddy` carries both `proxy` and `app` profiles, so `--profile app up` serves the whole stack: web at `http://localhost/`, API at `http://localhost/api/*`.
+
+Notes: local Caddy is plain HTTP, so the compose `api` defaults `SESSION_COOKIE_SECURE=false` (override in `.env` behind real TLS) and `TRUST_PROXY_HEADERS=true` (Caddy is the only ingress and sets `X-Forwarded-For` itself; a `.env` copied from `.env.example` pins `false`, which stays safe but shares one rate-limit bucket per proxy IP). Outside the default stack: `api`, `web`, `caddy` (`proxy`/`app`), and `ollama` (`local-ai`).
 
 > **MinIO caveat:** the MinIO image in the compose stack is pinned for **local development only**. The upstream MinIO project is no longer maintained and points to AIStor; revalidate the image before any production use. Production object-storage targets are S3 or Cloudflare R2 (ADR-0006).
 
@@ -129,15 +143,55 @@ Select the local path with `EMBEDDING_PROVIDER=ollama` and/or `CHAT_PROVIDER=oll
 
 ### Application Services
 
-- **`apps/api`** — FastAPI service (`apps/api/src/raguard_api`, `apps/api/alembic`, `apps/api/raguard-bootstrap`): JWT authentication (`auth/jwt.py`, `auth/router.py` — `POST /api/auth/login`), org-scoped RBAC via the single fresh `AuthorizationResolver`/`AuthorizationScope` (`authorization/`), authorized document upload with tenant-scoped list/detail and tenant-prefixed object keys (`documents/`), hybrid retrieval (`retrieval/` — `POST /api/search`, shared `retrieve_chunks`, `fusion.py` RRF `k=60`, `queries.py` FTS `simple` + `halfvec(1024)` cosine with `hnsw.ef_search`, bounded `top_k`/query validation), and bounded chat (`chat/` — `POST /api/chat`, static `SYSTEM_PROMPT` + `UNTRUSTED_SOURCES_START/END` delimiters, `providers/` selectable OpenAI/Ollama completer with bounded timeout/retries/`CHAT_MAX_OUTPUT_TOKENS`, neutral `{answer: null, citations: []}` on empty/no-match, `citations.py` `[n]` verification, safe 503 envelope). Alembic migrations under `apps/api/alembic`; `apps/api/raguard-bootstrap` seeds the first tenant.
+- **`apps/api`** — FastAPI service (`apps/api/src/raguard_api`, `apps/api/alembic`, `apps/api/raguard-bootstrap`): JWT authentication (`auth/jwt.py`, `auth/router.py` — `POST /api/auth/login`), org-scoped RBAC via the single fresh `AuthorizationResolver`/`AuthorizationScope` (`authorization/`), authorized document upload with tenant-scoped list/detail and tenant-prefixed object keys plus per-document grants (`documents/` — `visibility` tenant/restricted, `document_grants` to users/roles, `PATCH /api/documents/{id}/visibility`, `GET/POST /api/documents/{id}/grants`, `DELETE /api/documents/{id}/grants/{grant_id}`), hybrid retrieval (`retrieval/` — `POST /api/search`, shared `retrieve_chunks`, `fusion.py` RRF `k=60`, `queries.py` FTS `simple` + `halfvec(1024)` cosine with `hnsw.ef_search` plus the visibility grant clause in SQL before ranking, bounded `top_k`/query validation), and bounded chat (`chat/` — `POST /api/chat`, static `SYSTEM_PROMPT` + `UNTRUSTED_SOURCES_START/END` delimiters, `providers/` selectable OpenAI/Ollama completer with bounded timeout/retries/`CHAT_MAX_OUTPUT_TOKENS`, neutral `{answer: null, citations: []}` on empty/no-match, `citations.py` `[n]` verification, safe 503 envelope, optional tenant+user-scoped history via `models.py` + `POST/GET/DELETE /api/conversations`: `conversations`/`messages` tables from migration `0004`, stateless when no `conversation_id` is sent). Alembic migrations under `apps/api/alembic`; `apps/api/raguard-bootstrap` seeds the first tenant.
 - **`apps/worker`** — Redis + Arq ingestion worker: parsing, chunking, provider-neutral embeddings, atomic indexing/failure handling, bounded retries, and cleanup (source under `apps/worker/src/raguard_worker` — `parsers.py`, `chunking.py`, `embeddings.py`, `jobs.py`, `cleanup.py`); run via the compose `worker` service.
-- **`apps/web`** — React + Vite frontend (TanStack Router/Query, Vitest, Playwright): chat with citations and source preview, documents library/detail/upload, admin organization views, login shell.
+- **`apps/web`** — React + Vite frontend (TanStack Router/Query, Vitest, Playwright): chat with citations and source preview, documents library/detail/upload (detail includes visibility + grant management), admin organization views, login shell.
 
 ### Environment Variables & Secrets
 
 - `.env.example` lists every variable the stack consumes; copy it to `.env` and fill in real values. `.env*` files are gitignored — never commit real credentials.
 - `OPENAI_API_KEY` is consumed only when `EMBEDDING_PROVIDER`/`CHAT_PROVIDER` select `openai` (worker embedding adapter, API retrieval embedder + chat completer; `EMBEDDING_MODEL`, `CHAT_MODEL`, `PROVIDER_TIMEOUT_SECONDS`, `CHAT_RETRIES`, `RETRIEVAL_SEMANTIC_MAX_DISTANCE` etc. in `.env.example`); it stays empty on the fully local (ollama/ollama) path. `ANTHROPIC_API_KEY` is reserved for a future adapter. Secrets live in environment files or a secret manager, never in source code or manifests.
 - Providers are selectable behind adapters (ADR-0005): `EMBEDDING_PROVIDER`/`CHAT_PROVIDER` choose `openai` (default; `text-embedding-3-small`, `gpt-4o-mini`) or `ollama` (`qwen3-embedding:0.6b`, `qwen3:1.7b` via `OLLAMA_BASE_URL`); embeddings are standardized at 1024 dimensions for both, and nothing is hard-wired beyond the injectable `FakeEmbedder`/`FakeCompleter` used in tests.
+
+### Observability
+
+Structured JSON access logs plus liveness/readiness and Prometheus metrics — no new dependencies (the metrics registry is in-process in `apps/api/src/raguard_api/observability.py`).
+
+- **Request id:** `ObservabilityMiddleware` reads `X-Request-ID` or generates a UUID4 hex, echoes it back in the response header, stores it on `request.state.request_id`, and propagates it to logs via a `contextvars` variable (async-safe). The 500 envelope in `errors.py` reuses the same id.
+- **Logs:** one JSON line per request on the `raguard_api.access` logger (`timestamp` ISO, `level`, `logger`, `message`, `request_id`, `method`, `path` without query string, `status`, `duration_ms`). Only these fields are ever rendered — auth headers, cookies, tokens, and bodies are never logged. `LOG_JSON=true` (default) selects JSON; set `LOG_JSON=false` for plain text in dev.
+- **Endpoints (never rate-limited):** `GET /health` → `200 {"status":"ok"}` liveness with no dependencies; `GET /ready` → readiness over PostgreSQL (`SELECT 1`) and Redis (`PING`) with a 2s timeout each, `200 {"status":"ok",...}` or `503 {"status":"degraded","checks":{"postgres":...,"redis":...}}` with generic `ok`/`error` labels only (no internal detail in responses); `GET /metrics` → Prometheus text (`text/plain; version=0.0.4`) with `raguard_http_requests_total{method,path_template,status}` (route template, never the raw path, so ids cannot explode cardinality; unmatched paths use `"unknown"`), histogram `raguard_http_request_duration_seconds{method,path_template}` (`_bucket`/`_sum`/`_count`), gauge `raguard_ready` (1/0, set by each `/ready` check), and counter `raguard_http_rate_limited_total` (F4 rejections).
+- **Scraping:** point Prometheus at `api:8000/metrics` (in-network) or via Caddy once a `/metrics` route is published; scrape interval ≥15s is plenty for this cardinality. Run uvicorn with `--no-access-log` to keep a single access stream — the module deliberately never configures uvicorn loggers (documented in `observability.py`). The compose `api` service carries an `/health`-based `healthcheck`.
+- Tests: `apps/api/tests/unit/test_observability.py` (registry exposition, request-id generate/propagate, formatter fields, `/ready` 503 with faked checks, template labels, rate-limit bypass).
+
+### Rate Limiting
+
+Every `/api/*` route is guarded per tenant+user (or client IP without a verified identity): `RATE_LIMIT_REQUESTS` requests per `RATE_LIMIT_WINDOW_SECONDS` seconds (defaults 60/60, `RATE_LIMIT_ENABLED=true` to bypass explicitly). Identity comes from the verified session JWT (cookie or `Authorization: Bearer`); otherwise the direct peer IP is used — `X-Forwarded-For` is honored only when `TRUST_PROXY_HEADERS=true` (default false, so untrusted headers never widen or poison buckets; with exactly one trusted proxy the RIGHTMOST hop is used, since the proxy appends the observed peer last and left hops are client-spoofable). Over the limit, the API returns the safe `429 {error: {code: "rate_limited"}}` envelope with a `Retry-After` header and no internal detail; `/health`, `/metrics`, and non-`/api/` paths are never limited. State lives in Redis sorted sets (`RATELIMIT_REDIS_URL`, defaulting to the job-queue Redis) as a true sliding window over the current plus previous bucket (`ratelimit:{tenant}:{subject}:{bucket}`); if Redis is unreachable the limiter degrades to an in-process per-worker counter enforcing the same bound (never unlimited) and logs one warning per window. See `apps/api/src/raguard_api/ratelimit.py` and `RateLimitMiddleware` in `apps/api/src/raguard_api/main.py`; unit contract in `apps/api/tests/unit/test_ratelimit.py`, Redis-backed integration in `apps/api/tests/integration/test_ratelimit_redis.py` (skipped without the local stack, run in CI).
+
+### Row-Level Security Hardening (opt-in)
+
+Tenant isolation is enforced at the application layer (retrieval predicates before ranking — the non-negotiable invariant). Migration `0006_row_level_security` adds a second line of defense: non-`FORCE` row-level security with a `tenant_isolation` policy on every tenant-scoped table (`documents`, `chunks`, `conversations`, `messages`, `document_grants`, `memberships`, `roles`) plus a non-owner application role `raguard_app` (`NOLOGIN` by default; `GRANT USAGE ON SCHEMA public` + `SELECT, INSERT, UPDATE, DELETE` on those tables). Because RLS is not `FORCE`, the table owner still bypasses it — the default deployment is unchanged.
+
+To adopt the hardened path, set a password for the role and point `DATABASE_URL` at it (see the commented example in `infra/compose.yaml`):
+
+```sql
+ALTER ROLE raguard_app WITH LOGIN PASSWORD '<strong-secret>';
+```
+
+```bash
+DATABASE_URL=postgresql+psycopg://raguard_app:<strong-secret>@127.0.0.1:5432/raguard
+```
+
+With the GUC `app.tenant_id` unset/empty the policies match nothing, so sessions must scope via `tenant_scoped_session(session_factory, tenant_id)` in `apps/api/src/raguard_api/db.py` (the `after_begin` hook emits `SET LOCAL app.tenant_id`). Existing routers keep using plain `session_factory()` and behave exactly as before. Downgrading past `0006` drops the policies but intentionally keeps the `raguard_app` role so hardened deployments do not break. Covered by `apps/api/tests/unit/test_db_tenant_guc.py` and `apps/api/tests/integration/test_rls.py` (skipped without the local stack, run in CI).
+
+**Which credential runs what (read this before switching `DATABASE_URL`):**
+
+| Process | Credential | Why |
+|---|---|---|
+| Migrations + bootstrap | Owner (e.g. `raguard`) | DDL plus seed writes; bypasses RLS |
+| `POST /api/auth/login` | Owner | Looks up `users`/`tenants`, which grant nothing to `raguard_app` |
+| API request-serving (opt-in hardened) | `raguard_app` **with** `app.tenant_id` set per session | RLS backstop active |
+
+The `raguard_app` role holds no grants on `users`/`tenants` and no router sets `app.tenant_id` today, so bootstrap and login fail under that credential — this is by design, not a misconfiguration. Guard choice (deliberately least-invasive, no enforcement in routers): `assert_rls_ready(current_role, tenant_id)` in `db.py` fails fast with a clear error when a session would run RLS-blind under `raguard_app`, and `create_app` logs a startup warning when `DATABASE_URL` authenticates as `raguard_app` while the tenant wiring is not active. A warning — not a hard failure — because hardened request-serving on `raguard_app` is a supported explicit choice once callers scope their sessions.
 
 ### Validation & Checks
 

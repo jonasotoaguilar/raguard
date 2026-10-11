@@ -261,3 +261,19 @@ async def test_ready_row_with_missing_object_becomes_failed_source_missing() -> 
     assert claim.failed_calls == ["source_missing"]
     assert claim.indexed_calls == []
     assert claim.closed
+
+
+async def test_deleted_between_fetch_and_lock_acks_without_recreating() -> None:
+    """DELETE racing the job (row gone after fetch, before lock) ACKs cleanly (F1).
+
+    The ghost ``ingest:{document_id}`` enqueue has no cancel, so a delete may
+    land mid-dispatch: ``lock_for_process`` returns None and the job ends
+    without commits, alerts, or recreated chunks.
+    """
+    document_state = state(ready=True)
+    environment = ctx(claim=None, states=[document_state])
+
+    assert await ingest_document(environment, str(document_state.document_id)) is None
+
+    assert environment["store"].lock_calls == [document_state.document_id]
+    assert environment["object_store"].put_keys == []

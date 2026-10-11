@@ -3,17 +3,36 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, clearSession, setSession } from '../api/client'
-import { getDocument } from '../api/documents'
+import {
+  createGrant,
+  deleteDocument,
+  deleteGrant,
+  getDocument,
+  listGrants,
+  updateDocumentVisibility,
+} from '../api/documents'
 import { documentDetailRoute, router } from '../app/router'
 import { DocumentDetailPage, documentDetailQueryOptions } from './documents'
 
 vi.mock('../api/documents', () => ({
+  deleteDocument: vi.fn(),
   listDocuments: vi.fn(),
   uploadDocument: vi.fn(),
   getDocument: vi.fn(),
+  listGrants: vi.fn(),
+  createGrant: vi.fn(),
+  deleteGrant: vi.fn(),
+  updateDocumentVisibility: vi.fn(),
+  isDocumentVisibility: (value: unknown) =>
+    value === 'tenant' || value === 'restricted',
 }))
 
+const deleteMock = vi.mocked(deleteDocument)
 const getMock = vi.mocked(getDocument)
+const listGrantsMock = vi.mocked(listGrants)
+const createGrantMock = vi.mocked(createGrant)
+const deleteGrantMock = vi.mocked(deleteGrant)
+const updateVisibilityMock = vi.mocked(updateDocumentVisibility)
 
 const DOC_ID = '11111111-1111-1111-1111-111111111111'
 
@@ -22,6 +41,7 @@ const INDEXED = {
   name: 'alpha.pdf',
   status: 'indexed',
   failure_reason: null,
+  visibility: 'tenant',
 } as const
 
 function renderDetail(documentId: string = DOC_ID) {
@@ -38,11 +58,13 @@ function renderDetail(documentId: string = DOC_ID) {
 beforeEach(() => {
   vi.clearAllMocks()
   clearSession()
+  listGrantsMock.mockResolvedValue({ grants: [] } as never)
 })
 
 afterEach(() => {
   cleanup()
   clearSession()
+  vi.unstubAllGlobals()
 })
 
 describe('DocumentDetailPage success', () => {
@@ -176,5 +198,143 @@ describe('document detail route guard', () => {
     expect(() =>
       beforeLoad({ location: { pathname: `/documents/${DOC_ID}` } }),
     ).not.toThrow()
+  })
+})
+
+describe('DocumentDetailPage delete', () => {
+  it('deletes on confirm and calls the API with the document id', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true))
+    getMock.mockResolvedValue(INDEXED as never)
+    deleteMock.mockResolvedValue(undefined as never)
+    const user = userEvent.setup()
+    renderDetail()
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /^delete$/i }),
+      ).toBeInTheDocument(),
+    )
+    await user.click(screen.getByRole('button', { name: /^delete$/i }))
+
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(1))
+    expect(deleteMock).toHaveBeenCalledWith(DOC_ID)
+  })
+
+  it('does nothing when the confirmation is dismissed', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(false))
+    getMock.mockResolvedValue(INDEXED as never)
+    const user = userEvent.setup()
+    renderDetail()
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /^delete$/i }),
+      ).toBeInTheDocument(),
+    )
+    await user.click(screen.getByRole('button', { name: /^delete$/i }))
+
+    expect(deleteMock).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('heading', { name: 'alpha.pdf' }),
+    ).toBeInTheDocument()
+  })
+
+  it('surfaces a calm error when deletion fails', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true))
+    getMock.mockResolvedValue(INDEXED as never)
+    deleteMock.mockRejectedValue(
+      new ApiError({ status: 500, code: 'internal_error', message: 'Boom' }),
+    )
+    const user = userEvent.setup()
+    renderDetail()
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /^delete$/i }),
+      ).toBeInTheDocument(),
+    )
+    await user.click(screen.getByRole('button', { name: /^delete$/i }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    expect(screen.getByRole('alert')).toHaveTextContent(/could not delete/i)
+  })
+})
+
+describe('DocumentDetailPage visibility and grants', () => {
+  it('saves a visibility change through the API', async () => {
+    getMock.mockResolvedValue(INDEXED as never)
+    updateVisibilityMock.mockResolvedValue({
+      ...INDEXED,
+      visibility: 'restricted',
+    } as never)
+    const user = userEvent.setup()
+    renderDetail()
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Visibility')).toBeInTheDocument(),
+    )
+    await user.selectOptions(screen.getByLabelText('Visibility'), 'restricted')
+    await user.click(screen.getByRole('button', { name: /save visibility/i }))
+
+    await waitFor(() =>
+      expect(updateVisibilityMock).toHaveBeenCalledWith(DOC_ID, 'restricted'),
+    )
+  })
+
+  it('lists grants and adds one through the form', async () => {
+    getMock.mockResolvedValue(INDEXED as never)
+    listGrantsMock.mockResolvedValue({ grants: [] } as never)
+    createGrantMock.mockResolvedValue({
+      id: 'grant-1',
+      grantee_type: 'user',
+      grantee_id: '22222222-2222-2222-2222-222222222222',
+    } as never)
+    const user = userEvent.setup()
+    renderDetail()
+
+    await waitFor(() =>
+      expect(screen.getByText('No grants yet.')).toBeInTheDocument(),
+    )
+    await user.type(
+      screen.getByLabelText('Grantee ID'),
+      '22222222-2222-2222-2222-222222222222',
+    )
+    await user.click(screen.getByRole('button', { name: /add grant/i }))
+
+    await waitFor(() =>
+      expect(createGrantMock).toHaveBeenCalledWith(DOC_ID, {
+        grantee_type: 'user',
+        grantee_id: '22222222-2222-2222-2222-222222222222',
+      }),
+    )
+  })
+
+  it('removes a grant through the API', async () => {
+    getMock.mockResolvedValue(INDEXED as never)
+    listGrantsMock.mockResolvedValue({
+      grants: [
+        {
+          id: 'grant-1',
+          grantee_type: 'role',
+          grantee_id: '33333333-3333-3333-3333-333333333333',
+        },
+      ],
+    } as never)
+    deleteGrantMock.mockResolvedValue(undefined as never)
+    const user = userEvent.setup()
+    renderDetail()
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /delete grant grant-1/i }),
+      ).toBeInTheDocument(),
+    )
+    await user.click(
+      screen.getByRole('button', { name: /delete grant grant-1/i }),
+    )
+
+    await waitFor(() =>
+      expect(deleteGrantMock).toHaveBeenCalledWith(DOC_ID, 'grant-1'),
+    )
   })
 })

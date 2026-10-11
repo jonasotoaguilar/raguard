@@ -89,7 +89,18 @@ def validate_retrieval_bounds(
         )
 
 
+def validate_rate_limit_bounds(*, requests: int, window_seconds: int) -> None:
+    """Startup guard: the F4 limiter always enforces a positive bound."""
+    if not 1 <= requests <= 10_000:
+        raise ValueError(f"rate_limit_requests out of bounds: {requests}; require 1..10000")
+    if not 1 <= window_seconds <= 3600:
+        raise ValueError(
+            f"rate_limit_window_seconds out of bounds: {window_seconds}; require 1..3600"
+        )
+
+
 class Settings(BaseSettings):
+    log_json: bool = True
     jwt_secret: str = Field(min_length=32)
     jwt_issuer: str = "raguard"
     jwt_audience: str = "raguard-api"
@@ -143,6 +154,17 @@ class Settings(BaseSettings):
     chat_provider: str = "openai"
     ollama_chat_model: str = "qwen3:1.7b"
 
+    # --- Rate limiting (task F4): per tenant+user (or client IP without
+    # identity) over /api/*. Enabled by default with a safe bound; disabling
+    # is an explicit operator choice. An empty rate_limit_redis_url reuses the
+    # job-queue Redis. X-Forwarded-For is honored only behind an explicit
+    # trust flag, otherwise the direct peer address is the IP subject. ---
+    rate_limit_enabled: bool = True
+    rate_limit_requests: int = 60
+    rate_limit_window_seconds: int = 60
+    rate_limit_redis_url: str = ""
+    trust_proxy_headers: bool = False
+
     model_config = {"extra": "ignore"}
 
     def model_post_init(self, __context: Any) -> None:
@@ -166,6 +188,10 @@ class Settings(BaseSettings):
             ef_search=self.retrieval_ef_search,
             max_distance=self.retrieval_semantic_max_distance,
             max_query_length=self.retrieval_max_query_length,
+        )
+        validate_rate_limit_bounds(
+            requests=self.rate_limit_requests,
+            window_seconds=self.rate_limit_window_seconds,
         )
 
 

@@ -8,12 +8,15 @@ the embedding as ``HALFVEC(1024)``, both join documents by tenant+document
 keys, break signal ties by ascending chunk id, and bound the candidate count.
 """
 
+import inspect
 import uuid
 
 import pytest
 import raguard_api.identity.models  # noqa: F401  # register identity tables in Base.metadata
 from pgvector.sqlalchemy import HALFVEC
 from raguard_api.authorization.scope import AuthorizationScope
+from raguard_api.documents.models import Document
+from raguard_api.documents.visibility import scope_visibility_clause
 from raguard_api.retrieval.queries import (
     build_ef_search_statement,
     build_keyword_query,
@@ -39,6 +42,16 @@ def _scope() -> AuthorizationScope:
     )
 
 
+def _tenant_only():
+    # Explicit trivial predicate isolating the tenant filter: most tests below
+    # verify tenant-only SQL shape, so they pass this fixed predicate instead
+    # of scope_visibility_clause (which would inject the grant EXISTS
+    # subquery into the compiled text). Production call sites always pass
+    # scope_visibility_clause(scope); dedicated tests below prove the real
+    # clause composes into both signals.
+    return Document.visibility == "tenant"
+
+
 def _compiled(statement) -> str:
     return str(
         statement.compile(dialect=postgresql.dialect(), compile_kwargs={"render_postcompile": True})
@@ -51,8 +64,21 @@ def _bindparam(statement, key: str) -> BindParameter:
     )
 
 
+def test_visibility_predicate_is_mandatory_on_both_builders():
+    """There must be no way to compile retrieval without the visibility filter."""
+    for builder in (build_keyword_query, build_semantic_query):
+        param = inspect.signature(builder).parameters["visibility_predicate"]
+        assert param.default is inspect.Parameter.empty
+
+
 def test_keyword_query_applies_tenant_predicate_before_ranking():
-    sql = _compiled(build_keyword_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT))
+    sql = _compiled(
+        build_keyword_query(
+            tenant_predicate=_scope().tenant_predicate,
+            limit=LIMIT,
+            visibility_predicate=_tenant_only(),
+        )
+    )
 
     where_pos = sql.index("WHERE")
     order_pos = sql.index("ORDER BY")
@@ -63,21 +89,39 @@ def test_keyword_query_applies_tenant_predicate_before_ranking():
 
 
 def test_keyword_query_uses_simple_plainto_tsquery():
-    sql = _compiled(build_keyword_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT))
+    sql = _compiled(
+        build_keyword_query(
+            tenant_predicate=_scope().tenant_predicate,
+            limit=LIMIT,
+            visibility_predicate=_tenant_only(),
+        )
+    )
 
     assert "plainto_tsquery('simple', %(query)s)" in sql
     assert "ts_rank(chunks.search_vector" in sql
 
 
 def test_keyword_query_joins_documents_by_tenant_and_document_keys():
-    sql = _compiled(build_keyword_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT))
+    sql = _compiled(
+        build_keyword_query(
+            tenant_predicate=_scope().tenant_predicate,
+            limit=LIMIT,
+            visibility_predicate=_tenant_only(),
+        )
+    )
 
     assert "documents.tenant_id = chunks.tenant_id" in sql
     assert "documents.id = chunks.document_id" in sql
 
 
 def test_keyword_query_orders_by_rank_desc_then_chunk_id_asc():
-    sql = _compiled(build_keyword_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT))
+    sql = _compiled(
+        build_keyword_query(
+            tenant_predicate=_scope().tenant_predicate,
+            limit=LIMIT,
+            visibility_predicate=_tenant_only(),
+        )
+    )
 
     assert "ORDER BY rank DESC, chunks.id ASC" in sql
 
@@ -89,7 +133,13 @@ def test_keyword_query_filters_on_tsquery_match_after_tenant_predicate():
     for non-matches), so a no-match query would never return the neutral empty
     result required by the spec.
     """
-    sql = _compiled(build_keyword_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT))
+    sql = _compiled(
+        build_keyword_query(
+            tenant_predicate=_scope().tenant_predicate,
+            limit=LIMIT,
+            visibility_predicate=_tenant_only(),
+        )
+    )
 
     match = "chunks.search_vector @@ plainto_tsquery('simple', %(query)s)"
     assert match in sql
@@ -97,14 +147,36 @@ def test_keyword_query_filters_on_tsquery_match_after_tenant_predicate():
 
 
 def test_keyword_query_limits_candidates():
-    statement = build_keyword_query(tenant_predicate=_scope().tenant_predicate, limit=LIMIT)
+    statement = build_keyword_query(
+        tenant_predicate=_scope().tenant_predicate,
+        limit=LIMIT,
+        visibility_predicate=_tenant_only(),
+    )
 
     assert statement._limit == LIMIT
 
 
+def test_keyword_query_composes_scope_visibility_clause():
+    """The production visibility clause lands in the keyword WHERE clause."""
+    scope = _scope()
+    sql = _compiled(
+        build_keyword_query(
+            tenant_predicate=scope.tenant_predicate,
+            limit=LIMIT,
+            visibility_predicate=scope_visibility_clause(scope),
+        )
+    )
+
+    assert "document_grants" in sql
+    assert sql.index("document_grants") < sql.index("ORDER BY")
+
+
 def test_semantic_query_binds_halfvec_1536_embedding():
     statement = build_semantic_query(
-        tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+        tenant_predicate=_scope().tenant_predicate,
+        limit=LIMIT,
+        max_distance=MAX_DISTANCE,
+        visibility_predicate=_tenant_only(),
     )
     sql = _compiled(statement)
 
@@ -117,7 +189,10 @@ def test_semantic_query_binds_halfvec_1536_embedding():
 
 def test_semantic_query_applies_tenant_predicate_before_ranking():
     statement = build_semantic_query(
-        tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+        tenant_predicate=_scope().tenant_predicate,
+        limit=LIMIT,
+        max_distance=MAX_DISTANCE,
+        visibility_predicate=_tenant_only(),
     )
     sql = _compiled(statement)
 
@@ -131,7 +206,10 @@ def test_semantic_query_applies_tenant_predicate_before_ranking():
 def test_semantic_query_joins_documents_by_tenant_and_document_keys():
     sql = _compiled(
         build_semantic_query(
-            tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+            tenant_predicate=_scope().tenant_predicate,
+            limit=LIMIT,
+            max_distance=MAX_DISTANCE,
+            visibility_predicate=_tenant_only(),
         )
     )
 
@@ -142,7 +220,10 @@ def test_semantic_query_joins_documents_by_tenant_and_document_keys():
 def test_semantic_query_orders_by_distance_asc_then_chunk_id_asc():
     sql = _compiled(
         build_semantic_query(
-            tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+            tenant_predicate=_scope().tenant_predicate,
+            limit=LIMIT,
+            max_distance=MAX_DISTANCE,
+            visibility_predicate=_tenant_only(),
         )
     )
 
@@ -151,7 +232,10 @@ def test_semantic_query_orders_by_distance_asc_then_chunk_id_asc():
 
 def test_semantic_query_limits_candidates():
     statement = build_semantic_query(
-        tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+        tenant_predicate=_scope().tenant_predicate,
+        limit=LIMIT,
+        max_distance=MAX_DISTANCE,
+        visibility_predicate=_tenant_only(),
     )
 
     assert statement._limit == LIMIT
@@ -165,7 +249,10 @@ def test_semantic_query_filters_by_max_distance_before_ordering():
     would never return the neutral empty result required by the spec.
     """
     statement = build_semantic_query(
-        tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+        tenant_predicate=_scope().tenant_predicate,
+        limit=LIMIT,
+        max_distance=MAX_DISTANCE,
+        visibility_predicate=_tenant_only(),
     )
     sql = _compiled(statement)
 
@@ -175,7 +262,10 @@ def test_semantic_query_filters_by_max_distance_before_ordering():
 
 def test_semantic_query_max_distance_is_bound_and_applied_after_tenant_predicate():
     statement = build_semantic_query(
-        tenant_predicate=_scope().tenant_predicate, limit=LIMIT, max_distance=MAX_DISTANCE
+        tenant_predicate=_scope().tenant_predicate,
+        limit=LIMIT,
+        max_distance=MAX_DISTANCE,
+        visibility_predicate=_tenant_only(),
     )
     sql = _compiled(statement)
 
@@ -185,6 +275,22 @@ def test_semantic_query_max_distance_is_bound_and_applied_after_tenant_predicate
     max_distance_bind = _bindparam(statement, "max_distance")
     assert isinstance(max_distance_bind.type, Float)
     assert max_distance_bind.value == MAX_DISTANCE
+
+
+def test_semantic_query_composes_scope_visibility_clause():
+    """The production visibility clause lands in the semantic WHERE clause."""
+    scope = _scope()
+    sql = _compiled(
+        build_semantic_query(
+            tenant_predicate=scope.tenant_predicate,
+            limit=LIMIT,
+            max_distance=MAX_DISTANCE,
+            visibility_predicate=scope_visibility_clause(scope),
+        )
+    )
+
+    assert "document_grants" in sql
+    assert sql.index("document_grants") < sql.index("ORDER BY")
 
 
 def test_ef_search_statement_is_parameterized():

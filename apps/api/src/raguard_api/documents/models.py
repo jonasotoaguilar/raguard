@@ -51,6 +51,14 @@ _FAILURE_REASON_ALLOWLIST_SQL = (
 )
 _SEARCH_VECTOR_SQL = "to_tsvector('simple'::regconfig, content)"
 
+# Per-document visibility (F3): 'tenant' keeps the pre-F3 behavior (anyone with
+# corpus.view); 'restricted' requires an explicit user or role grant (see
+# documents/visibility.py and migration 0005). The CHECK mirrors the migration.
+VISIBILITY_TENANT = "tenant"
+VISIBILITY_RESTRICTED = "restricted"
+_DOCUMENT_VISIBILITY_SQL = "visibility IN ('tenant', 'restricted')"
+_GRANTEE_TYPE_SQL = "grantee_type IN ('user', 'role')"
+
 
 class Document(Base):
     """One uploaded document, tenant-scoped, with a lifecycle and dispatch gate."""
@@ -59,6 +67,7 @@ class Document(Base):
     __table_args__ = (
         CheckConstraint(_DOCUMENT_STATUS_SQL, name="ck_documents_status"),
         CheckConstraint(_FAILURE_REASON_ALLOWLIST_SQL, name="ck_documents_failure_reason"),
+        CheckConstraint(_DOCUMENT_VISIBILITY_SQL, name="ck_documents_visibility"),
         UniqueConstraint("tenant_id", "id", name="uq_documents_tenant_id"),
         Index("ix_documents_tenant_status", "tenant_id", "status"),
         Index("ix_documents_tenant_created_at", "tenant_id", "created_at"),
@@ -75,6 +84,44 @@ class Document(Base):
         Boolean, nullable=False, server_default=text("false")
     )
     storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    visibility: Mapped[str] = mapped_column(
+        Text, nullable=False, default=VISIBILITY_TENANT, server_default=text("'tenant'")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class DocumentGrant(Base):
+    """One per-document grant to a user or a role, tenant-scoped (F3)."""
+
+    __tablename__ = "document_grants"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "document_id"],
+            ["documents.tenant_id", "documents.id"],
+            name="fk_document_grants_tenant_document",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "document_id",
+            "grantee_type",
+            "grantee_id",
+            name="uq_document_grants_scope",
+        ),
+        CheckConstraint(_GRANTEE_TYPE_SQL, name="ck_document_grants_grantee_type"),
+        Index("ix_document_grants_tenant_document", "tenant_id", "document_id"),
+        Index("ix_document_grants_tenant_grantee", "tenant_id", "grantee_type", "grantee_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("tenants.id", name="fk_document_grants_tenant_id"), nullable=False
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    grantee_type: Mapped[str] = mapped_column(Text, nullable=False)
+    grantee_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -1,13 +1,22 @@
-"""Chat contracts (PR 2): bounded request, citation allowlist, completer boundary."""
+"""Chat contracts (PR 2 + F2): bounded request, citation allowlist, completer boundary,
+conversation history contracts."""
 
 import uuid
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from datetime import datetime
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, field_validator
 
 from raguard_api.config import Settings
 from raguard_api.retrieval.contracts import FusedResult
+
+#: Default title for a freshly created conversation; replaced by the first
+#: user query once the first persisted turn lands.
+DEFAULT_CONVERSATION_TITLE = "New conversation"
+
+#: Hard bound for conversation titles (also enforced by API validation).
+MAX_CONVERSATION_TITLE_LENGTH = 200
 
 
 def create_chat_request(settings: Settings) -> type[BaseModel]:
@@ -16,6 +25,7 @@ def create_chat_request(settings: Settings) -> type[BaseModel]:
     class ChatRequest(BaseModel):
         query: str = Field(min_length=1)
         top_k: int = Field(default=settings.retrieval_top_k, ge=1, le=settings.retrieval_top_k_max)
+        conversation_id: uuid.UUID | None = None
 
         @field_validator("query")
         @classmethod
@@ -70,6 +80,61 @@ class ChatCompleter(Protocol):
     """Synchronous completion boundary; routers call it via ``asyncio.to_thread``."""
 
     def complete(self, prompt: CompletionPrompt) -> str: ...
+
+
+class ConversationCreateRequest(BaseModel):
+    """Bounded ``POST /api/conversations`` payload: optional title only.
+
+    Tenant and user identity always come from the verified scope, never from
+    the client (no ``tenant_id``/``user_id`` fields by design).
+    """
+
+    title: str | None = Field(default=None, max_length=MAX_CONVERSATION_TITLE_LENGTH)
+
+    @field_validator("title")
+    @classmethod
+    def _bounded_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("title must not be blank")
+        return trimmed
+
+
+class ConversationSummary(BaseModel):
+    """Allowlisted conversation row: identity-scoped fields only, no tenant/user."""
+
+    id: uuid.UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationListResponse(BaseModel):
+    """Newest-first list of the caller's own conversations."""
+
+    conversations: list[ConversationSummary] = Field(default_factory=list)
+
+
+class HistoryMessage(BaseModel):
+    """One persisted turn: role allowlist plus content and citations."""
+
+    id: uuid.UUID
+    role: Literal["user", "assistant"]
+    content: str
+    citations: list[Citation] = Field(default_factory=list)
+    created_at: datetime
+
+
+class ConversationDetailResponse(BaseModel):
+    """One owned conversation with its messages in chronological order."""
+
+    id: uuid.UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    messages: list[HistoryMessage] = Field(default_factory=list)
 
 
 class FakeCompleter:

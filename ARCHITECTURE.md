@@ -136,6 +136,7 @@ erDiagram
     roles ||--o{ memberships : "assigns"
     tenants ||--o{ documents : "owns"
     documents ||--o{ chunks : "contains"
+    documents ||--o{ document_grants : "grants"
     tenants ||--o{ conversations : "owns"
     conversations ||--o{ messages : "contains"
     memberships }o--|| roles : "grants role"
@@ -168,6 +169,15 @@ erDiagram
         text storage_key
         text status
         text source_type
+        text visibility
+        timestamptz created_at
+    }
+    document_grants {
+        uuid id PK
+        uuid tenant_id FK
+        uuid document_id FK
+        text grantee_type
+        uuid grantee_id
         timestamptz created_at
     }
     chunks {
@@ -267,7 +277,7 @@ erDiagram
 
 ### Data Model Overview
 
-See the [ERD](#data-model) above. Key ownership rules: every row that must be tenant-scoped carries `tenant_id`; membership (`memberships`) is the join between a user, a tenant, and a role; document visibility is role/tenant-based and resolved into an **authorized chunk id set at query time** (see [Tenant Isolation & Authorization](#tenant-isolation--authorization-defense-in-depth)).
+See the [ERD](#data-model) above. Key ownership rules: every row that must be tenant-scoped carries `tenant_id`; membership (`memberships`) is the join between a user, a tenant, and a role; per-document visibility (`documents.visibility` + `document_grants`, migration `0005`) resolves in SQL at query time: `tenant` documents stay visible to anyone with `corpus.view`, while `restricted` documents require a grant naming the caller or one of their roles (see [Tenant Isolation & Authorization](#tenant-isolation--authorization-defense-in-depth)). Grants cascade with their document and never block the tenant admin's delete.
 
 ### Indexing & Access Paths
 
@@ -301,10 +311,10 @@ See the [ERD](#data-model) above. Key ownership rules: every row that must be te
 
 This is the product's non-negotiable invariant from the PRD, restated as architecture:
 
-1. **Retrieval-level filtering (primary control)**: tenant and role/document permissions are applied in the retrieval queries *before* any generation. Un-authorized chunks cannot be retrieved, cited, or entered into the prompt ([ADR-0002](docs/adr/0002-retrieval-level-authorization.md)).
+1. **Retrieval-level filtering (primary control)**: tenant and per-document grant permissions (`documents.visibility` + `document_grants`, resolved from the fresh `AuthorizationScope` user/role ids) are applied in the retrieval queries *before* any generation. Un-authorized chunks cannot be retrieved, cited, or entered into the prompt ([ADR-0002](docs/adr/0002-retrieval-level-authorization.md)).
 2. **Citation verification (secondary control)**: after generation, every citation must resolve to a chunk id in the authorized retrieval result; citations to anything else are rejected before persisting/rendering.
 3. **API-scope enforcement (tertiary)**: all data routes resolve the request tenant from the verified JWT — never from a client-supplied value; UI-level hiding is explicitly not an authorization control.
-4. **Candidate (defense-in-depth, not yet decided)**: PostgreSQL Row-Level Security keyed to the resolved tenant context could add a DB-enforced backstop, but it requires careful connection/tenant-context handling (session-level `app.tenant_id` with pooled connections) and is an open decision; it must never replace the retrieval-layer filtering.
+4. **Row-Level Security backstop (opt-in, defense-in-depth)**: migration `0006` enables non-`FORCE` RLS with a `tenant_isolation` policy (`tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid`) on every tenant-scoped table, plus a non-owner `raguard_app` role and the opt-in `tenant_scoped_session` helper (`SET LOCAL app.tenant_id` via `after_begin`) in `apps/api/src/raguard_api/db.py`. The owner path bypasses RLS, so the default deployment is unchanged; pointing `DATABASE_URL` at `raguard_app` is an explicit hardening step (see README). It must never replace the retrieval-layer filtering above. Role contract: migrations + bootstrap + `POST /api/auth/login` run as the owner (`raguard_app` has no grants on `users`/`tenants` and no router sets the GUC, so bootstrap/login fail under it by design); hardened request-serving runs as `raguard_app` with `app.tenant_id` set per session. Guard (least-invasive, honest): `assert_rls_ready(current_role, tenant_id)` fails fast on RLS-blind app-role sessions, and `create_app` warns at startup when `DATABASE_URL` uses `raguard_app` without tenant wiring — a warning, not enforcement, since hardened serving is a supported explicit choice.
 5. **Document content is untrusted data**: prompt-injection hardening keeps system/user instructions separate from retrieved content; adversarial documents are part of the security test suite.
 
 ## API Architecture **[CONDITIONAL — the system has an API surface]**
@@ -408,7 +418,7 @@ Targets marked *draft* come from the PRD and are confirmed once the evaluation h
 | 3 | Chunking strategy + RRF weights | Parameterized defaults; tuned against evaluation set | Evaluation harness |
 | 4 | Tenant provisioning | Admin-invited only in the MVP (PRD default); self-serve later | PRD open decision |
 | 5 | Evaluation harness in-repo vs separate tool | Not yet decided; determined at the config phase | PRD open decision |
-| 6 | PostgreSQL RLS as defense-in-depth | Not adopted yet; would require session tenant-context handling with pooled connections | Security review; never replaces retrieval-layer authz |
+| 6 | PostgreSQL RLS as defense-in-depth | Adopted as opt-in backstop (`0006`: non-`FORCE` policies + `raguard_app` role + `tenant_scoped_session`); default owner path unchanged | Security review; never replaces retrieval-layer authz |
 | 7 | Rate limits per user/tenant | Enforce at API; exact limits at config phase | Config phase |
 
 ## Failure Modes & Mitigations **[CONDITIONAL — realistic failure modes]**

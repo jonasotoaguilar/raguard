@@ -6,30 +6,175 @@ ingestion, retrieval search, and grounded chat routers. The documents router
 receives real adapters (boto3 S3 and Arq/Redis) constructed from settings,
 the retrieval router receives a lazily-connecting provider embedder, and the
 chat router a lazy provider-selected completer (OpenAI default, Ollama opt-in);
-connections are lazy, so factory tests stay offline.
+connections are lazy, so factory tests stay offline. F4 rate limiting guards
+every ``/api/`` route (health/metrics and non-API paths excluded) per
+tenant+user — or client IP without a verified identity — degrading to an
+in-process bound when Redis is unreachable.
 """
 
-from fastapi import FastAPI
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+import logging
+import os
+from typing import Any
 
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from raguard_api.auth.jwt import InvalidToken, decode_access_token
 from raguard_api.auth.router import create_auth_router
 from raguard_api.chat.providers import create_completer
-from raguard_api.chat.router import create_chat_router
+from raguard_api.chat.router import create_chat_router, create_conversations_router
 from raguard_api.config import Settings, get_settings
+from raguard_api.db import create_engine, create_session_factory, get_database_url
 from raguard_api.documents.queue import ArqJobQueue
 from raguard_api.documents.router import create_documents_router
 from raguard_api.documents.storage import S3ObjectStore, create_s3_client
-from raguard_api.errors import register_error_handlers
+from raguard_api.errors import RateLimitError, register_error_handlers
+from raguard_api.observability import (
+    CheckFn,
+    ObservabilityMiddleware,
+    configure_logging,
+    create_observability_router,
+    get_default_registry,
+)
 from raguard_api.org.router import create_org_router
+from raguard_api.ratelimit import RateLimiter, build_rate_limiter
 from raguard_api.retrieval.embeddings import create_embedder
 from raguard_api.retrieval.router import create_retrieval_router
 
+logger = logging.getLogger(__name__)
 
-def create_app(*, settings: Settings, session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
+_EXCLUDED_PATHS = frozenset({"/health", "/ready", "/metrics"})
+
+
+def _resolve_identity(request: Request, settings: Settings) -> tuple[str, str]:
+    """(tenant, subject) from the verified JWT or, without one, the client IP.
+
+    The token is read from the session cookie first, then the Authorization
+    Bearer header; an invalid token falls back to IP instead of failing, so
+    unauthenticated abuse still shares one bounded bucket. X-Forwarded-For is
+    honored only when ``trust_proxy_headers`` is explicitly enabled —
+    otherwise the direct peer address is used, never client-controlled input.
+
+    With exactly one trusted proxy (Caddy) the proxy APPENDS the observed TCP
+    peer as the RIGHTMOST hop, so only ``hops[-1]`` is trustworthy: every hop
+    to its left is client-controlled and freely spoofable. Do not enable the
+    flag behind more than one proxy without chain-aware parsing.
+    """
+    token = request.cookies.get(settings.session_cookie_name)
+    if token is None:
+        authorization = request.headers.get("authorization", "")
+        scheme, _, credentials = authorization.partition(" ")
+        if scheme.lower() == "bearer" and credentials.strip():
+            token = credentials.strip()
+    if token is not None:
+        try:
+            claims = decode_access_token(token, settings)
+            return str(claims.tid), f"user:{claims.sub}"
+        except InvalidToken:
+            pass
+    ip = request.client.host if request.client is not None else "unknown"
+    if settings.trust_proxy_headers:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+        if hops:
+            ip = hops[-1]
+    return "anonymous", f"ip:{ip}"
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """F4 enforcement: bounded requests per window on ``/api/`` routes only.
+
+    The limiter is read from ``app.state`` per request so tests can inject a
+    double after factory composition; ``limiter_override`` covers bare-app
+    wiring without state setup.
+    """
+
+    def __init__(
+        self, app: Any, *, settings: Settings, limiter_override: RateLimiter | None = None
+    ) -> None:
+        super().__init__(app)
+        self._settings = settings
+        self._limiter_override = limiter_override
+
+    async def dispatch(self, request: Request, call_next):
+        settings = self._settings
+        path = request.url.path
+        if not settings.rate_limit_enabled:
+            return await call_next(request)
+        if not path.startswith("/api/") or path in _EXCLUDED_PATHS:
+            return await call_next(request)
+        limiter: RateLimiter | None = self._limiter_override or getattr(
+            request.app.state, "rate_limiter", None
+        )
+        if limiter is None:  # miswired app: fail open is forbidden, fail safe
+            get_default_registry().inc_rate_limited()
+            exc = RateLimitError()
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"error": {"code": exc.code, "message": exc.message}},
+                headers={"Retry-After": str(exc.retry_after_seconds)},
+            )
+        tenant, subject = _resolve_identity(request, settings)
+        decision = await limiter.check(tenant=tenant, subject=subject)
+        if not decision.allowed:
+            get_default_registry().inc_rate_limited()
+            exc = RateLimitError(retry_after_seconds=decision.retry_after_seconds)
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"error": {"code": exc.code, "message": exc.message}},
+                headers={"Retry-After": str(exc.retry_after_seconds)},
+            )
+        return await call_next(request)
+
+
+def attach_rate_limiting(
+    app: FastAPI, settings: Settings, *, limiter: RateLimiter | None = None
+) -> RateLimiter:
+    """Mount the F4 middleware; returns the active limiter for overrides."""
+    active = limiter if limiter is not None else build_rate_limiter(settings)
+    app.state.rate_limiter = active
+    app.add_middleware(RateLimitMiddleware, settings=settings, limiter_override=active)
+    return active
+
+
+def create_app(
+    *,
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    limiter: RateLimiter | None = None,
+    observability_checks: dict[str, CheckFn] | None = None,
+) -> FastAPI:
     """Build the raguard API application with the standard error envelope."""
+    from raguard_api.db import database_url_uses_app_role
+
+    if database_url_uses_app_role(os.environ.get("DATABASE_URL", "")):
+        # Honesty guard, not enforcement: no router sets app.tenant_id today,
+        # so serving (and especially bootstrap/login, which need users/tenants
+        # rows the app role cannot see) on the raguard_app credential fails.
+        # Migrations + bootstrap + login must use the owner credential; see
+        # assert_rls_ready in db.py and the README RLS section.
+        logger.warning(
+            "DATABASE_URL authenticates as raguard_app, which cannot run "
+            "bootstrap/login and has no per-request tenant wiring: "
+            "migrations, bootstrap, and login require the owner credential"
+        )
     app = FastAPI(title="raguard API", version="0.1.0")
     register_error_handlers(app)
     app.dependency_overrides[get_settings] = lambda: settings
+    configure_logging(json_format=settings.log_json)
+    attach_rate_limiting(app, settings, limiter=limiter)
+    # Added last so it runs outermost: denials from the rate limiter above
+    # are still observed, logged, and stamped with the request id.
+    app.add_middleware(ObservabilityMiddleware)
+    app.include_router(
+        create_observability_router(
+            session_factory=session_factory,
+            redis_url=settings.job_queue_redis_url,
+            checks=observability_checks,
+        )
+    )
     app.include_router(create_auth_router(settings=settings, session_factory=session_factory))
     app.include_router(create_org_router(session_factory=session_factory))
     store = S3ObjectStore(create_s3_client(settings), bucket=settings.object_store_bucket)
@@ -57,4 +202,21 @@ def create_app(*, settings: Settings, session_factory: async_sessionmaker[AsyncS
             completer=completer,
         )
     )
+    app.include_router(create_conversations_router(session_factory=session_factory))
     return app
+
+
+def create_default_app() -> FastAPI:
+    """Compose/uvicorn entrypoint: build the app from the process environment.
+
+    Reads ``Settings`` from the environment (``JWT_SECRET`` and friends) and
+    ``DATABASE_URL`` for the async engine, then delegates to :func:`create_app`.
+    Served as ``uvicorn --factory raguard_api.main:create_default_app`` (see
+    ``apps/api/Dockerfile``). A factory — rather than a module-level ``app`` —
+    keeps the import side-effect free, so tests keep composing the app via
+    ``create_app`` with explicit settings and a missing/invalid environment
+    fails fast only when the server actually starts.
+    """
+    settings = Settings()
+    engine = create_engine(get_database_url())
+    return create_app(settings=settings, session_factory=create_session_factory(engine))

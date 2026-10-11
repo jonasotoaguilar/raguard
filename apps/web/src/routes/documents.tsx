@@ -2,9 +2,19 @@ import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type MouseEvent, useState } from 'react'
 import { ApiError } from '../api/client'
 import {
+  createGrant,
+  type Document,
+  type DocumentGrant,
   type DocumentList,
+  type DocumentVisibility,
+  deleteDocument,
+  deleteGrant,
+  type GranteeType,
   getDocument,
+  isDocumentVisibility,
   listDocuments,
+  listGrants,
+  updateDocumentVisibility,
   uploadDocument,
 } from '../api/documents'
 import { EmptyState, ErrorState, ForbiddenState, Skeleton } from '../app/shell'
@@ -51,6 +61,15 @@ export function documentDetailQueryKey(documentId: string) {
   return ['document', documentId] as const
 }
 
+/** Query options for one document's grants (managers only; 403 hides the section). */
+export function documentGrantsQueryOptions(documentId: string) {
+  return queryOptions({
+    queryKey: ['document-grants', documentId] as const,
+    queryFn: ({ signal }) => listGrants(documentId, { signal }),
+    retry: false,
+  })
+}
+
 /** Shared detail options: focus refetch on, no background polling. */
 export function documentDetailQueryOptions(documentId: string) {
   return queryOptions({
@@ -78,14 +97,27 @@ function isPlainLeftClick(event: MouseEvent<HTMLAnchorElement>): boolean {
  * The router import is deferred to click time to avoid a module cycle:
  * app/router imports this file.
  */
-function goClientSide(event: MouseEvent<HTMLAnchorElement>, href: string) {
-  if (!isPlainLeftClick(event)) return
-  event.preventDefault()
+/** Programmatic client-side navigation with a full-load fallback. */
+function goTo(href: string) {
   void import('../app/router')
     .then((mod) => mod.router.history.push(href))
     .catch(() => {
       window.location.href = href
     })
+}
+
+function goClientSide(event: MouseEvent<HTMLAnchorElement>, href: string) {
+  if (!isPlainLeftClick(event)) return
+  event.preventDefault()
+  goTo(href)
+}
+
+/** Confirm-then-delete helper shared by the library and detail views. */
+async function confirmDelete(doc: Document): Promise<boolean> {
+  if (!window.confirm(`Delete "${doc.name}"? This cannot be undone.`))
+    return false
+  await deleteDocument(doc.id)
+  return true
 }
 
 /**
@@ -96,8 +128,104 @@ function goClientSide(event: MouseEvent<HTMLAnchorElement>, href: string) {
  * neutral without existence disclosure; other failures offer a retry.
  */
 export function DocumentDetailPage({ documentId }: { documentId: string }) {
+  const queryClient = useQueryClient()
   const detail = useQuery(documentDetailQueryOptions(documentId))
   const error = detail.error instanceof ApiError ? detail.error : null
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const grants = useQuery({
+    ...documentGrantsQueryOptions(documentId),
+    enabled: detail.isSuccess,
+  })
+  const [visibility, setVisibility] = useState<DocumentVisibility | null>(null)
+  const [visibilityError, setVisibilityError] = useState<string | null>(null)
+  const [savingVisibility, setSavingVisibility] = useState(false)
+  const [granteeType, setGranteeType] = useState<GranteeType>('user')
+  const [granteeId, setGranteeId] = useState('')
+  const [grantError, setGrantError] = useState<string | null>(null)
+  const [grantBusy, setGrantBusy] = useState(false)
+  const currentVisibility: DocumentVisibility =
+    visibility ??
+    (detail.data && isDocumentVisibility(detail.data.visibility)
+      ? detail.data.visibility
+      : 'tenant')
+
+  async function handleVisibilitySave() {
+    if (!detail.data || savingVisibility) return
+    setVisibilityError(null)
+    setSavingVisibility(true)
+    try {
+      await updateDocumentVisibility(documentId, currentVisibility)
+      setVisibility(null)
+      await queryClient.invalidateQueries({
+        queryKey: documentDetailQueryKey(documentId),
+      })
+      await queryClient.invalidateQueries({ queryKey: DOCUMENTS_QUERY_KEY })
+    } catch {
+      setVisibilityError('Could not update visibility. Please try again.')
+    } finally {
+      setSavingVisibility(false)
+    }
+  }
+
+  async function handleGrantAdd() {
+    const trimmed = granteeId.trim()
+    if (grantBusy || trimmed === '') return
+    setGrantError(null)
+    setGrantBusy(true)
+    try {
+      await createGrant(documentId, {
+        grantee_type: granteeType,
+        grantee_id: trimmed,
+      })
+      setGranteeId('')
+      await queryClient.invalidateQueries({
+        queryKey: ['document-grants', documentId],
+      })
+    } catch (err) {
+      setGrantError(
+        err instanceof ApiError ? err.message : 'Could not add the grant.',
+      )
+    } finally {
+      setGrantBusy(false)
+    }
+  }
+
+  async function handleGrantDelete(grant: DocumentGrant) {
+    if (grantBusy) return
+    setGrantError(null)
+    setGrantBusy(true)
+    try {
+      await deleteGrant(documentId, grant.id)
+      await queryClient.invalidateQueries({
+        queryKey: ['document-grants', documentId],
+      })
+    } catch {
+      setGrantError('Could not delete the grant. Please try again.')
+    } finally {
+      setGrantBusy(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (!detail.data || deleting) return
+    setDeleteError(null)
+    setDeleting(true)
+    try {
+      const deleted = await confirmDelete(detail.data)
+      if (!deleted) return
+      await queryClient.invalidateQueries({
+        queryKey: DOCUMENTS_QUERY_KEY,
+      })
+      goTo('/documents')
+    } catch {
+      setDeleteError(
+        `Could not delete "${detail.data.name}". Please try again.`,
+      )
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   return (
     <section
@@ -142,6 +270,106 @@ export function DocumentDetailPage({ documentId }: { documentId: string }) {
             <dt>Document ID</dt>
             <dd style={{ overflowWrap: 'anywhere' }}>{detail.data.id}</dd>
           </dl>
+          <button
+            type="button"
+            onClick={() => void handleDelete()}
+            disabled={deleting}
+          >
+            {deleting ? 'Deleting…' : 'Delete'}
+          </button>
+          {deleteError ? <p role="alert">{deleteError}</p> : null}
+          <h2>Visibility</h2>
+          <p>
+            Restricted documents are visible only to granted users or roles.
+          </p>
+          <label>
+            Visibility{' '}
+            <select
+              aria-label="Visibility"
+              value={currentVisibility}
+              onChange={(event) =>
+                setVisibility(event.target.value as DocumentVisibility)
+              }
+            >
+              <option value="tenant">Tenant</option>
+              <option value="restricted">Restricted</option>
+            </select>
+          </label>{' '}
+          <button
+            type="button"
+            onClick={() => void handleVisibilitySave()}
+            disabled={savingVisibility}
+          >
+            {savingVisibility ? 'Saving…' : 'Save visibility'}
+          </button>
+          {visibilityError ? <p role="alert">{visibilityError}</p> : null}
+          <h2>Grants</h2>
+          {grants.isPending ? <Skeleton label="Loading grants" /> : null}
+          {grants.isError ? (
+            grants.error instanceof ApiError && grants.error.status === 403 ? (
+              <p>Grant management needs a manager role.</p>
+            ) : (
+              <p role="alert">Could not load grants.</p>
+            )
+          ) : null}
+          {grants.isSuccess && grants.data.grants.length === 0 ? (
+            <p>No grants yet.</p>
+          ) : null}
+          {grants.isSuccess && grants.data.grants.length > 0 ? (
+            <ul>
+              {grants.data.grants.map((grant) => (
+                <li key={grant.id}>
+                  {grant.grantee_type}:{grant.grantee_id}{' '}
+                  <button
+                    type="button"
+                    aria-label={`Delete grant ${grant.id}`}
+                    onClick={() => void handleGrantDelete(grant)}
+                    disabled={grantBusy}
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {grants.isSuccess || grants.isError ? (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault()
+                void handleGrantAdd()
+              }}
+            >
+              <label>
+                Type{' '}
+                <select
+                  aria-label="Grantee type"
+                  value={granteeType}
+                  onChange={(event) =>
+                    setGranteeType(event.target.value as GranteeType)
+                  }
+                >
+                  <option value="user">user</option>
+                  <option value="role">role</option>
+                </select>
+              </label>{' '}
+              <label>
+                Grantee ID{' '}
+                <input
+                  aria-label="Grantee ID"
+                  value={granteeId}
+                  onChange={(event) => setGranteeId(event.target.value)}
+                  placeholder="uuid"
+                />
+              </label>{' '}
+              <button
+                type="submit"
+                disabled={grantBusy || granteeId.trim() === ''}
+              >
+                Add grant
+              </button>
+            </form>
+          ) : null}
+          {grantError ? <p role="alert">{grantError}</p> : null}
         </>
       ) : null}
     </section>
@@ -159,6 +387,8 @@ export function DocumentsPage() {
   const documents = useQuery(documentsQueryOptions())
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   async function handleFiles(files: File[]) {
     if (uploading || files.length === 0) return
@@ -189,6 +419,23 @@ export function DocumentsPage() {
     setUploading(false)
   }
 
+  async function handleDelete(doc: Document) {
+    if (deletingId !== null) return
+    setDeleteError(null)
+    setDeletingId(doc.id)
+    try {
+      const deleted = await confirmDelete(doc)
+      if (!deleted) return
+      await queryClient.invalidateQueries({
+        queryKey: DOCUMENTS_QUERY_KEY,
+      })
+    } catch {
+      setDeleteError(`Could not delete "${doc.name}". Please try again.`)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   const error = documents.error instanceof ApiError ? documents.error : null
   const docs = documents.data?.documents ?? []
 
@@ -204,6 +451,7 @@ export function DocumentsPage() {
       />
       {uploading ? <p role="status">Uploading…</p> : null}
       {uploadError ? <p role="alert">{uploadError}</p> : null}
+      {deleteError ? <p role="alert">{deleteError}</p> : null}
       {documents.isPending ? <Skeleton label="Loading documents" /> : null}
       {documents.isError ? (
         error?.status === 403 ? (
@@ -228,6 +476,7 @@ export function DocumentsPage() {
             <tr>
               <th scope="col">Name</th>
               <th scope="col">Status</th>
+              <th scope="col">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -248,6 +497,16 @@ export function DocumentsPage() {
                     status={doc.status as ChipStatus}
                     failureReason={doc.failure_reason}
                   />
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    aria-label={`Delete ${doc.name}`}
+                    onClick={() => void handleDelete(doc)}
+                    disabled={deletingId !== null}
+                  >
+                    {deletingId === doc.id ? 'Deleting…' : 'Delete'}
+                  </button>
                 </td>
               </tr>
             ))}

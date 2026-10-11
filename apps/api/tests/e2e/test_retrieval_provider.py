@@ -18,6 +18,7 @@ import pytest
 from raguard_api.authorization.scope import AuthorizationScope
 from raguard_api.documents.contracts import EMBEDDING_DIMENSION
 from raguard_api.documents.models import Chunk, Document
+from raguard_api.documents.visibility import scope_visibility_clause
 from raguard_api.identity.models import Tenant
 from raguard_api.retrieval.embeddings import OpenAIEmbedder
 from raguard_api.retrieval.queries import build_semantic_query
@@ -72,7 +73,10 @@ async def test_real_provider_embedding_is_1024_dims_and_binds_to_halfvec(migrate
         tenant_id=tenant_id, user_id=uuid.uuid4(), capabilities=frozenset({"chat.use"})
     )
     statement = build_semantic_query(
-        tenant_predicate=scope.tenant_predicate, limit=5, max_distance=0.5
+        tenant_predicate=scope.tenant_predicate,
+        limit=5,
+        max_distance=0.5,
+        visibility_predicate=scope_visibility_clause(scope),
     )
     async with migrated_db.session_factory() as session:
         rows = (await session.execute(statement, {"embedding": vector})).all()

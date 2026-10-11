@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DOCUMENTS_API_PATH,
+  deleteDocument,
   getDocument,
   listDocuments,
   uploadDocument,
@@ -142,6 +143,51 @@ describe('getDocument', () => {
   })
 })
 
+describe('deleteDocument', () => {
+  it('DELETEs /api/documents/{id} and resolves undefined on 204', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      deleteDocument('11111111-1111-1111-1111-111111111111'),
+    ).resolves.toBeUndefined()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DOCUMENTS_API_PATH}/11111111-1111-1111-1111-111111111111`,
+      expect.objectContaining({ method: 'DELETE', credentials: 'include' }),
+    )
+  })
+
+  it('forwards an abort signal', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await deleteDocument('x', { signal: controller.signal })
+
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
+  })
+
+  it('propagates a neutral 404 on a repeat delete', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse(404, {
+          error: { code: 'not_found', message: 'Document not found' },
+        }),
+      ),
+    )
+    await expect(deleteDocument('missing')).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    })
+  })
+})
+
 describe('uploadDocument', () => {
   it('POSTs multipart FormData with the file field and mirrors the created document', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
@@ -209,5 +255,48 @@ describe('uploadDocument', () => {
       status: 400,
       code: 'invalid_request',
     })
+  })
+})
+
+describe('visibility and grants', () => {
+  it('PATCHes visibility with a JSON body', async () => {
+    const { updateDocumentVisibility } = await import('./documents')
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: '1',
+        name: 'a.pdf',
+        status: 'indexed',
+        failure_reason: null,
+        visibility: 'restricted',
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await updateDocumentVisibility('1', 'restricted')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DOCUMENTS_API_PATH}/1/visibility`,
+      expect.objectContaining({ method: 'PATCH' }),
+    )
+    expect(result.visibility).toBe('restricted')
+  })
+
+  it('round-trips grants list/create/delete', async () => {
+    const { createGrant, deleteGrant, listGrants } = await import('./documents')
+    const grant = { id: 'g1', grantee_type: 'user', grantee_id: 'u1' }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(200, { grants: [grant] }))
+        .mockResolvedValueOnce(jsonResponse(201, grant))
+        .mockResolvedValueOnce(new Response(null, { status: 204 })),
+    )
+
+    await expect(listGrants('1')).resolves.toEqual({ grants: [grant] })
+    await expect(
+      createGrant('1', { grantee_type: 'user', grantee_id: 'u1' }),
+    ).resolves.toEqual(grant)
+    await expect(deleteGrant('1', 'g1')).resolves.toBeUndefined()
   })
 })
