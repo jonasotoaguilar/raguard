@@ -57,6 +57,19 @@ class ServiceUnavailableError(APIError):
     code = "service_unavailable"
 
 
+class RateLimitError(APIError):
+    """F4 quota exceeded: safe 429 envelope, never internal limiter detail."""
+
+    status_code = 429
+    code = "rate_limited"
+
+    def __init__(
+        self, message: str = "Rate limit exceeded", *, retry_after_seconds: int = 60
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = max(1, int(retry_after_seconds))
+
+
 def _envelope(code: str, message: str, *, details=None) -> dict:
     body = {"error": {"code": code, "message": message}}
     if details is not None:
@@ -83,9 +96,13 @@ def _sanitize_validation_details(details: list[dict]) -> list[dict]:
 def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(APIError)
     async def api_error(request: Request, exc: APIError):
+        headers = None
+        if isinstance(exc, RateLimitError):
+            headers = {"Retry-After": str(exc.retry_after_seconds)}
         return JSONResponse(
             status_code=exc.status_code,
             content=_envelope(exc.code, exc.message, details=exc.details),
+            headers=headers,
         )
 
     @app.exception_handler(RequestValidationError)

@@ -67,6 +67,7 @@ raguard is a self-hosted, multi-tenant RAG over PDF/Markdown: `apps/api` (FastAP
 | Flow | Entry → exit | Key files |
 |------|-------------|-----------|
 | Login | `POST /api/auth/login` → HttpOnly JWT cookie | `auth/router.py`, `auth/jwt.py`, `auth/passwords.py` |
+| Rate limiting | every `POST/GET /api/*` → verified JWT (cookie/Bearer) or client IP → sliding-window check → 429 `rate_limited` + `Retry-After` or pass-through | `ratelimit.py`, `main.py` (`RateLimitMiddleware`), `errors.py` |
 | Document ingestion | `POST /api/documents` → S3 put → `pending` row → Arq enqueue → worker `ingest_document` → atomic chunk insert → `indexed`/`failed` | `documents/router.py`, `documents/storage.py`, `documents/queue.py`, `worker/jobs.py` |
 | Document deletion | `DELETE /api/documents/{id}` (`documents.manage`, neutral 404) → delete chunks + row commit → best-effort object delete; ghost `ingest:{id}` ACKs on the missing row without recreating data | `documents/router.py`, `worker/jobs.py` (dispatch `ack`) |
 | Hybrid retrieval | `POST /api/search` → fresh `AuthorizationScope` (+ role ids) → `retrieve_chunks` (embed once, parallel FTS `simple` + vector `halfvec(1024)`/`hnsw.ef_search`, tenant + visibility-grant predicates before ranking, RRF fusion, top-k bound) → `{results}` | `retrieval/router.py`, `retrieval/service.py`, `retrieval/queries.py`, `retrieval/fusion.py`, `documents/visibility.py` |
@@ -98,6 +99,7 @@ raguard is a self-hosted, multi-tenant RAG over PDF/Markdown: `apps/api` (FastAP
 | Change document validation or enqueue | `documents/router.py`, `documents/models.py`, `documents/visibility.py`, `documents/storage.py`, `documents/queue.py` | `test_documents_*`, `test_document_grants.py`, `test_visibility.py` |
 | Change worker pipeline / chunking | `worker/jobs.py`, `worker/chunking.py`, `worker/parsers.py`, `worker/embeddings.py` | `uv run pytest -m "not e2e"` + manual compose run |
 | Add a new API route | `main.py` (wire), new `*/router.py` using `create_scope_dependency` resolver | `test_app_factory.py` + new `integration/test_*_routes.py` |
+| Change rate limiting | `ratelimit.py`, `main.py` (`RateLimitMiddleware`), `config.py` (bounds), `errors.py` (`RateLimitError`) | `test_ratelimit.py`, `test_ratelimit_redis.py` |
 | Change DB schema | `identity/models.py` or `documents/models.py` + new `alembic/versions/*.py` | `test_migration.py`, `test_constraints.py` |
 | Change infra topology | `infra/compose.yaml`, `infra/Caddyfile`, `.env.example` | `docker compose -f infra/compose.yaml config` |
 
