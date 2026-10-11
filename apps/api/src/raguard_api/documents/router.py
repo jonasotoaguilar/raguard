@@ -1,4 +1,4 @@
-"""Protected /api/documents routes: authorized upload and tenant-scoped reads (task 2.4).
+"""Protected /api/documents routes: authorized upload, tenant-scoped reads, deletion (F1).
 
 Upload requires ``documents.manage`` and validates the configured size bound,
 the PDF/Markdown type allowlist, the extension, and the PDF signature before
@@ -9,7 +9,9 @@ before responding. Any failure after the object put compensates (object then
 row) with bounded jittered retries; exhaustion alerts and keeps the stale
 unready row as the sweep-owned marker, so no path leaves an orphan. Reads
 require ``corpus.view`` and compose the parameterized tenant predicate;
-cross-tenant targets are neutral 404s.
+cross-tenant targets are neutral 404s. Deletion requires ``documents.manage``
+and removes the row, its chunks, and the object (best-effort) under the same
+neutral 404; repeat deletes stay 404.
 """
 
 import asyncio
@@ -20,8 +22,8 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, UploadFile
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File, Response, UploadFile
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from raguard_api.authorization.capabilities import CORPUS_VIEW, DOCUMENTS_MANAGE
@@ -32,7 +34,7 @@ from raguard_api.authorization.resolver import (
 from raguard_api.authorization.scope import AuthorizationScope
 from raguard_api.config import Settings
 from raguard_api.documents.contracts import DocumentStatus
-from raguard_api.documents.models import Document
+from raguard_api.documents.models import Chunk, Document
 from raguard_api.documents.queue import _job_id
 from raguard_api.documents.storage import document_object_key
 from raguard_api.errors import (
@@ -215,6 +217,49 @@ def create_documents_router(
             )
         ).all()
         return {"documents": [_public_document(row) for row in rows]}
+
+    @router.delete("/{document_id}", status_code=204)
+    async def delete_document(
+        document_id: uuid.UUID,
+        scope: Annotated[AuthorizationScope, Depends(require_capability(DOCUMENTS_MANAGE))],
+        session: Annotated[AsyncSession, Depends(_session)],
+    ) -> Response:
+        """Delete a document: row + chunks + object, idempotent, neutral 404 (F1).
+
+        The tenant predicate keeps cross-tenant targets a neutral 404 with
+        the same wording as the reads. Chunks go first (no DB cascade),
+        then the row commits; the object delete is best-effort with the
+        bounded retry budget — a missing object is a no-op (idempotent) and
+        exhaustion only logs, so a storage blip never strands the row.
+        Repeating DELETE on a gone document answers the neutral 404.
+        No job cancel exists: ``JobQueue`` exposes only ``enqueue``, so an
+        accepted ``ingest:{document_id}`` ghost may still fire — the worker
+        ACKs a missing row without recreating data (jobs.dispatch_action).
+        """
+        row = (
+            await session.execute(
+                select(Document).where(
+                    scope.tenant_predicate(Document.tenant_id), Document.id == document_id
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise NotFoundError("Document not found")
+        storage_key = row.storage_key
+        await session.execute(
+            delete(Chunk).where(
+                Chunk.document_id == document_id, Chunk.tenant_id == scope.tenant_id
+            )
+        )
+        await session.delete(row)
+        await session.commit()
+        if not await _delete_object_with_retries(store, storage_key):
+            logger.error(
+                "delete object cleanup exhausted document_id=%s key=%s",
+                document_id,
+                storage_key,
+            )
+        return Response(status_code=204)
 
     @router.get("/{document_id}")
     async def get_document(

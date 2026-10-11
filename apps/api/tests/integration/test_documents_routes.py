@@ -15,8 +15,8 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from raguard_api.auth.jwt import create_access_token
 from raguard_api.config import Settings, get_settings
-from raguard_api.documents.contracts import FakeJobQueue, FakeObjectStore
-from raguard_api.documents.models import Document
+from raguard_api.documents.contracts import FakeEmbedder, FakeJobQueue, FakeObjectStore
+from raguard_api.documents.models import Chunk, Document
 from raguard_api.documents.router import create_documents_router
 from raguard_api.errors import register_error_handlers
 from raguard_api.identity.models import Membership, Role, Tenant, User
@@ -388,6 +388,127 @@ async def test_cross_tenant_detail_is_neutral_404(migrated_db):
     assert cross.status_code == missing.status_code == 404
     assert cross.json() == missing.json()  # neutral: no existence disclosed
     assert cross.json()["error"]["code"] == "not_found"
+
+
+async def _seed_deletable_document(db, ids, store, *, name="doomed.pdf", status="indexed"):
+    """One tenant-A document with an object and two chunks, for DELETE tests."""
+    document_id = uuid.uuid4()
+    key = f"{ids['tenant_a']}/{document_id}/{name}"
+    store.put(key, b"%PDF-1.4\nbye")
+    embedder = FakeEmbedder()
+    async with db.session_factory() as session:
+        session.add(
+            Document(
+                tenant_id=ids["tenant_a"],
+                id=document_id,
+                name=name,
+                status=status,
+                storage_key=key,
+                dispatch_ready=True,
+            )
+        )
+        await session.flush()
+        session.add_all(
+            [
+                Chunk(
+                    tenant_id=ids["tenant_a"],
+                    document_id=document_id,
+                    position=position,
+                    content=f"chunk {position}",
+                    embedding=embedder.embed([f"chunk {position}"])[0],
+                )
+                for position in range(2)
+            ]
+        )
+        await session.commit()
+    return document_id, key
+
+
+async def test_admin_delete_removes_row_chunks_and_object(migrated_db):
+    ids = await _seed(migrated_db)
+    app, settings, store, _ = _make_app(migrated_db)
+    document_id, key = await _seed_deletable_document(migrated_db, ids, store)
+    token = _token(settings, user_id=ids["admin"], tenant_id=ids["tenant_a"])
+    async with _client(app) as client:
+        response = await client.delete(f"/api/documents/{document_id}", headers=_cookie(token))
+    assert response.status_code == 204
+    assert response.content == b""
+    assert key in store.deleted_keys
+    with pytest.raises(KeyError):
+        store.get(key)
+    async with migrated_db.session_factory() as session:
+        assert await session.get(Document, document_id) is None
+        remaining = (
+            (await session.execute(select(Chunk).where(Chunk.document_id == document_id)))
+            .scalars()
+            .all()
+        )
+    assert remaining == []
+
+
+async def test_cross_tenant_delete_is_neutral_404(migrated_db):
+    ids = await _seed(migrated_db)
+    app, settings, _, _ = _make_app(migrated_db)
+    carol_token = _token(settings, user_id=ids["carol"], tenant_id=ids["tenant_b"])
+    admin_token = _token(settings, user_id=ids["admin"], tenant_id=ids["tenant_a"])
+    async with _client(app) as client:
+        cross = await client.delete(f"/api/documents/{ids['doc_a1']}", headers=_cookie(carol_token))
+        missing = await client.delete(
+            f"/api/documents/{uuid.uuid4()}", headers=_cookie(admin_token)
+        )
+    assert cross.status_code == missing.status_code == 404
+    assert cross.json() == missing.json()  # neutral: no existence disclosed
+    assert cross.json()["error"]["code"] == "not_found"
+    async with migrated_db.session_factory() as session:
+        assert await session.get(Document, ids["doc_a1"]) is not None
+
+
+async def test_delete_without_manage_capability_is_403(migrated_db):
+    ids = await _seed(migrated_db)
+    app, settings, store, _ = _make_app(migrated_db)
+    document_id, key = await _seed_deletable_document(migrated_db, ids, store)
+    token = _token(settings, user_id=ids["member"], tenant_id=ids["tenant_a"])
+    async with _client(app) as client:
+        response = await client.delete(f"/api/documents/{document_id}", headers=_cookie(token))
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+    async with migrated_db.session_factory() as session:
+        assert await session.get(Document, document_id) is not None
+    assert store.get(key) == b"%PDF-1.4\nbye"  # object untouched
+    assert key not in store.deleted_keys
+
+
+async def test_repeated_delete_is_neutral_404(migrated_db):
+    ids = await _seed(migrated_db)
+    app, settings, store, _ = _make_app(migrated_db)
+    document_id, _ = await _seed_deletable_document(migrated_db, ids, store)
+    token = _token(settings, user_id=ids["admin"], tenant_id=ids["tenant_a"])
+    async with _client(app) as client:
+        first = await client.delete(f"/api/documents/{document_id}", headers=_cookie(token))
+        second = await client.delete(f"/api/documents/{document_id}", headers=_cookie(token))
+        missing = await client.delete(f"/api/documents/{uuid.uuid4()}", headers=_cookie(token))
+    assert first.status_code == 204
+    assert second.status_code == missing.status_code == 404
+    assert second.json() == missing.json()
+
+
+async def test_delete_pending_document_clears_dispatch_state(migrated_db):
+    ids = await _seed(migrated_db)
+    app, settings, store, queue = _make_app(migrated_db)
+    token = _token(settings, user_id=ids["admin"], tenant_id=ids["tenant_a"])
+    async with _client(app) as client:
+        uploaded = await _upload(client, token)
+        document_id = uuid.UUID(uploaded.json()["id"])
+        key = f"{ids['tenant_a']}/{document_id}/report.pdf"
+        response = await client.delete(f"/api/documents/{document_id}", headers=_cookie(token))
+    assert response.status_code == 204
+    async with migrated_db.session_factory() as session:
+        assert await session.get(Document, document_id) is None
+    with pytest.raises(KeyError):
+        store.get(key)
+    # The accepted enqueue is a ghost: JobQueue exposes no cancel, so the
+    # entry stays, but the worker ACKs a missing row without recreating data.
+    assert queue.enqueued == [(f"ingest:{document_id}", document_id)]
 
 
 async def test_reads_require_corpus_view(migrated_db):

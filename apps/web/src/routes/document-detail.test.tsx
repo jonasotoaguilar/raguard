@@ -3,16 +3,18 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, clearSession, setSession } from '../api/client'
-import { getDocument } from '../api/documents'
+import { deleteDocument, getDocument } from '../api/documents'
 import { documentDetailRoute, router } from '../app/router'
 import { DocumentDetailPage, documentDetailQueryOptions } from './documents'
 
 vi.mock('../api/documents', () => ({
+  deleteDocument: vi.fn(),
   listDocuments: vi.fn(),
   uploadDocument: vi.fn(),
   getDocument: vi.fn(),
 }))
 
+const deleteMock = vi.mocked(deleteDocument)
 const getMock = vi.mocked(getDocument)
 
 const DOC_ID = '11111111-1111-1111-1111-111111111111'
@@ -43,6 +45,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   clearSession()
+  vi.unstubAllGlobals()
 })
 
 describe('DocumentDetailPage success', () => {
@@ -176,5 +179,64 @@ describe('document detail route guard', () => {
     expect(() =>
       beforeLoad({ location: { pathname: `/documents/${DOC_ID}` } }),
     ).not.toThrow()
+  })
+})
+
+describe('DocumentDetailPage delete', () => {
+  it('deletes on confirm and calls the API with the document id', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true))
+    getMock.mockResolvedValue(INDEXED as never)
+    deleteMock.mockResolvedValue(undefined as never)
+    const user = userEvent.setup()
+    renderDetail()
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /^delete$/i }),
+      ).toBeInTheDocument(),
+    )
+    await user.click(screen.getByRole('button', { name: /^delete$/i }))
+
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(1))
+    expect(deleteMock).toHaveBeenCalledWith(DOC_ID)
+  })
+
+  it('does nothing when the confirmation is dismissed', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(false))
+    getMock.mockResolvedValue(INDEXED as never)
+    const user = userEvent.setup()
+    renderDetail()
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /^delete$/i }),
+      ).toBeInTheDocument(),
+    )
+    await user.click(screen.getByRole('button', { name: /^delete$/i }))
+
+    expect(deleteMock).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('heading', { name: 'alpha.pdf' }),
+    ).toBeInTheDocument()
+  })
+
+  it('surfaces a calm error when deletion fails', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true))
+    getMock.mockResolvedValue(INDEXED as never)
+    deleteMock.mockRejectedValue(
+      new ApiError({ status: 500, code: 'internal_error', message: 'Boom' }),
+    )
+    const user = userEvent.setup()
+    renderDetail()
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /^delete$/i }),
+      ).toBeInTheDocument(),
+    )
+    await user.click(screen.getByRole('button', { name: /^delete$/i }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    expect(screen.getByRole('alert')).toHaveTextContent(/could not delete/i)
   })
 })

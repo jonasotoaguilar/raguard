@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DOCUMENTS_API_PATH,
+  deleteDocument,
   getDocument,
   listDocuments,
   uploadDocument,
@@ -136,6 +137,51 @@ describe('getDocument', () => {
       ),
     )
     await expect(getDocument('missing')).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    })
+  })
+})
+
+describe('deleteDocument', () => {
+  it('DELETEs /api/documents/{id} and resolves undefined on 204', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      deleteDocument('11111111-1111-1111-1111-111111111111'),
+    ).resolves.toBeUndefined()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DOCUMENTS_API_PATH}/11111111-1111-1111-1111-111111111111`,
+      expect.objectContaining({ method: 'DELETE', credentials: 'include' }),
+    )
+  })
+
+  it('forwards an abort signal', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await deleteDocument('x', { signal: controller.signal })
+
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
+  })
+
+  it('propagates a neutral 404 on a repeat delete', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse(404, {
+          error: { code: 'not_found', message: 'Document not found' },
+        }),
+      ),
+    )
+    await expect(deleteDocument('missing')).rejects.toMatchObject({
       status: 404,
       code: 'not_found',
     })

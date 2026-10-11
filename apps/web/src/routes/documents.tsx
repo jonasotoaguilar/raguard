@@ -2,7 +2,9 @@ import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type MouseEvent, useState } from 'react'
 import { ApiError } from '../api/client'
 import {
+  type Document,
   type DocumentList,
+  deleteDocument,
   getDocument,
   listDocuments,
   uploadDocument,
@@ -78,14 +80,27 @@ function isPlainLeftClick(event: MouseEvent<HTMLAnchorElement>): boolean {
  * The router import is deferred to click time to avoid a module cycle:
  * app/router imports this file.
  */
-function goClientSide(event: MouseEvent<HTMLAnchorElement>, href: string) {
-  if (!isPlainLeftClick(event)) return
-  event.preventDefault()
+/** Programmatic client-side navigation with a full-load fallback. */
+function goTo(href: string) {
   void import('../app/router')
     .then((mod) => mod.router.history.push(href))
     .catch(() => {
       window.location.href = href
     })
+}
+
+function goClientSide(event: MouseEvent<HTMLAnchorElement>, href: string) {
+  if (!isPlainLeftClick(event)) return
+  event.preventDefault()
+  goTo(href)
+}
+
+/** Confirm-then-delete helper shared by the library and detail views. */
+async function confirmDelete(doc: Document): Promise<boolean> {
+  if (!window.confirm(`Delete "${doc.name}"? This cannot be undone.`))
+    return false
+  await deleteDocument(doc.id)
+  return true
 }
 
 /**
@@ -96,8 +111,31 @@ function goClientSide(event: MouseEvent<HTMLAnchorElement>, href: string) {
  * neutral without existence disclosure; other failures offer a retry.
  */
 export function DocumentDetailPage({ documentId }: { documentId: string }) {
+  const queryClient = useQueryClient()
   const detail = useQuery(documentDetailQueryOptions(documentId))
   const error = detail.error instanceof ApiError ? detail.error : null
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  async function handleDelete() {
+    if (!detail.data || deleting) return
+    setDeleteError(null)
+    setDeleting(true)
+    try {
+      const deleted = await confirmDelete(detail.data)
+      if (!deleted) return
+      await queryClient.invalidateQueries({
+        queryKey: DOCUMENTS_QUERY_KEY,
+      })
+      goTo('/documents')
+    } catch {
+      setDeleteError(
+        `Could not delete "${detail.data.name}". Please try again.`,
+      )
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   return (
     <section
@@ -142,6 +180,14 @@ export function DocumentDetailPage({ documentId }: { documentId: string }) {
             <dt>Document ID</dt>
             <dd style={{ overflowWrap: 'anywhere' }}>{detail.data.id}</dd>
           </dl>
+          <button
+            type="button"
+            onClick={() => void handleDelete()}
+            disabled={deleting}
+          >
+            {deleting ? 'Deleting…' : 'Delete'}
+          </button>
+          {deleteError ? <p role="alert">{deleteError}</p> : null}
         </>
       ) : null}
     </section>
@@ -159,6 +205,8 @@ export function DocumentsPage() {
   const documents = useQuery(documentsQueryOptions())
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   async function handleFiles(files: File[]) {
     if (uploading || files.length === 0) return
@@ -189,6 +237,23 @@ export function DocumentsPage() {
     setUploading(false)
   }
 
+  async function handleDelete(doc: Document) {
+    if (deletingId !== null) return
+    setDeleteError(null)
+    setDeletingId(doc.id)
+    try {
+      const deleted = await confirmDelete(doc)
+      if (!deleted) return
+      await queryClient.invalidateQueries({
+        queryKey: DOCUMENTS_QUERY_KEY,
+      })
+    } catch {
+      setDeleteError(`Could not delete "${doc.name}". Please try again.`)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   const error = documents.error instanceof ApiError ? documents.error : null
   const docs = documents.data?.documents ?? []
 
@@ -204,6 +269,7 @@ export function DocumentsPage() {
       />
       {uploading ? <p role="status">Uploading…</p> : null}
       {uploadError ? <p role="alert">{uploadError}</p> : null}
+      {deleteError ? <p role="alert">{deleteError}</p> : null}
       {documents.isPending ? <Skeleton label="Loading documents" /> : null}
       {documents.isError ? (
         error?.status === 403 ? (
@@ -228,6 +294,7 @@ export function DocumentsPage() {
             <tr>
               <th scope="col">Name</th>
               <th scope="col">Status</th>
+              <th scope="col">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -248,6 +315,16 @@ export function DocumentsPage() {
                     status={doc.status as ChipStatus}
                     failureReason={doc.failure_reason}
                   />
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    aria-label={`Delete ${doc.name}`}
+                    onClick={() => void handleDelete(doc)}
+                    disabled={deletingId !== null}
+                  >
+                    {deletingId === doc.id ? 'Deleting…' : 'Delete'}
+                  </button>
                 </td>
               </tr>
             ))}

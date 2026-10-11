@@ -3,7 +3,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api/client'
-import { listDocuments, uploadDocument } from '../api/documents'
+import { deleteDocument, listDocuments, uploadDocument } from '../api/documents'
 import {
   DOCUMENTS_POLL_MS,
   DOCUMENTS_QUERY_KEY,
@@ -14,10 +14,12 @@ import {
 } from './documents'
 
 vi.mock('../api/documents', () => ({
+  deleteDocument: vi.fn(),
   listDocuments: vi.fn(),
   uploadDocument: vi.fn(),
 }))
 
+const deleteMock = vi.mocked(deleteDocument)
 const listMock = vi.mocked(listDocuments)
 const uploadMock = vi.mocked(uploadDocument)
 
@@ -62,6 +64,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
 })
 
 describe('DocumentsPage list', () => {
@@ -77,7 +80,11 @@ describe('DocumentsPage list', () => {
     )
 
     const headers = screen.getAllByRole('columnheader')
-    expect(headers.map((h) => h.textContent)).toEqual(['Name', 'Status'])
+    expect(headers.map((h) => h.textContent)).toEqual([
+      'Name',
+      'Status',
+      'Actions',
+    ])
     for (const h of headers) expect(h.getAttribute('scope')).toBe('col')
 
     expect(screen.getByText('Indexed')).toBeInTheDocument()
@@ -294,5 +301,70 @@ describe('DocumentsPage polling options', () => {
     expect(options.refetchOnWindowFocus).toBe(true)
     expect(options.refetchIntervalInBackground).toBe(false)
     expect(typeof options.refetchInterval).toBe('function')
+  })
+})
+
+describe('DocumentsPage delete', () => {
+  function stubConfirm(value: boolean) {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(value))
+  }
+
+  it('deletes on confirm and refreshes the list', async () => {
+    stubConfirm(true)
+    listMock
+      .mockResolvedValueOnce({ documents: [INDEXED] } as never)
+      .mockResolvedValueOnce({ documents: [] })
+    deleteMock.mockResolvedValue(undefined as never)
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() =>
+      expect(screen.getByText('alpha.pdf')).toBeInTheDocument(),
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Delete alpha.pdf' }))
+
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(1))
+    expect(deleteMock).toHaveBeenCalledWith(
+      '11111111-1111-1111-1111-111111111111',
+    )
+    await waitFor(() =>
+      expect(screen.getByText(/no documents yet/i)).toBeInTheDocument(),
+    )
+    expect(listMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does nothing when the confirmation is dismissed', async () => {
+    stubConfirm(false)
+    listMock.mockResolvedValue({ documents: [INDEXED] } as never)
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() =>
+      expect(screen.getByText('alpha.pdf')).toBeInTheDocument(),
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Delete alpha.pdf' }))
+
+    expect(deleteMock).not.toHaveBeenCalled()
+    expect(listMock).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('alpha.pdf')).toBeInTheDocument()
+  })
+
+  it('surfaces a calm error and keeps the document when deletion fails', async () => {
+    stubConfirm(true)
+    listMock.mockResolvedValue({ documents: [INDEXED] } as never)
+    deleteMock.mockRejectedValue(
+      new ApiError({ status: 500, code: 'internal_error', message: 'Boom' }),
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() =>
+      expect(screen.getByText('alpha.pdf')).toBeInTheDocument(),
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Delete alpha.pdf' }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    expect(screen.getByRole('alert')).toHaveTextContent(/could not delete/i)
+    expect(screen.getByText('alpha.pdf')).toBeInTheDocument()
   })
 })

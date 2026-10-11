@@ -35,6 +35,17 @@ export function getDocument(
   })
 }
 
+/** DELETE /api/documents/{id}: 204 with no body; cross-tenant is a neutral 404. */
+export function deleteDocument(
+  id: string,
+  init: { signal?: AbortSignal } = {},
+): Promise<void> {
+  return apiFetch<void>(`${DOCUMENTS_API_PATH}/${id}`, {
+    method: 'DELETE',
+    signal: init.signal,
+  })
+}
+
 /** POST /api/documents: multipart `file` field; browser owns the boundary header. */
 export function uploadDocument(
   file: File,
