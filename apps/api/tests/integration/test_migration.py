@@ -5,6 +5,8 @@ per-test database migrated to head; these tests assert the resulting schema and
 the safe down migration.
 """
 
+import uuid
+
 import pytest
 from sqlalchemy import text
 
@@ -135,8 +137,8 @@ async def test_up_creates_vector_extension(migrated_db):
     assert row is not None
 
 
-async def test_up_creates_halfvec_1536_embedding_column(migrated_db):
-    assert await _column_sql_type(migrated_db.engine, "chunks", "embedding") == "halfvec(1536)"
+async def test_up_creates_halfvec_1024_embedding_column(migrated_db):
+    assert await _column_sql_type(migrated_db.engine, "chunks", "embedding") == "halfvec(1024)"
 
 
 async def test_up_creates_hnsw_index_on_chunks_embedding(migrated_db):
@@ -162,6 +164,67 @@ async def test_up_creates_gin_index_on_generated_search_vector(migrated_db):
         row = (await conn.execute(sql)).mappings().first()
     assert row["column_type"] == "tsvector"
     assert row["stored_generated"] is True
+
+
+def _vector_literal(dims: int) -> str:
+    return "[" + ",".join(["0.1"] * dims) + "]"
+
+
+async def _insert_chunk_row(engine, *, dims: int) -> None:
+    """Insert one tenant/document/chunk with a dims-wide embedding literal."""
+    tenant_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("INSERT INTO tenants (id, name) VALUES (:id, 'migration-probe')"),
+            {"id": tenant_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO documents (id, tenant_id, name, status, storage_key) "
+                "VALUES (:id, :tenant_id, 'probe.pdf', 'indexed', 'probe/probe.pdf')"
+            ),
+            {"id": document_id, "tenant_id": tenant_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO chunks (id, tenant_id, document_id, position, content, embedding) "
+                f"VALUES (:id, :tenant_id, :document_id, 0, 'probe', "
+                f"CAST(:vector AS halfvec({dims})))"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "tenant_id": tenant_id,
+                "document_id": document_id,
+                "vector": _vector_literal(dims),
+            },
+        )
+
+
+async def test_0003_empty_downgrade_and_upgrade_round_trip(migrated_db):
+    await migrated_db.alembic("down", "0002")
+    assert await _column_sql_type(migrated_db.engine, "chunks", "embedding") == "halfvec(1536)"
+
+    await migrated_db.alembic("up", "head")
+    assert await _column_sql_type(migrated_db.engine, "chunks", "embedding") == "halfvec(1024)"
+    table_name, access_method = await _access_method(migrated_db.engine, "ix_chunks_embedding")
+    assert table_name == "chunks"
+    assert access_method == "hnsw"
+
+
+async def test_0003_upgrade_fails_closed_when_chunks_present(migrated_db):
+    await migrated_db.alembic("down", "0002")
+    await _insert_chunk_row(migrated_db.engine, dims=1536)
+    with pytest.raises(RuntimeError, match="[Rr]eindex/re-upload"):
+        await migrated_db.alembic("up", "head")
+    assert await _column_sql_type(migrated_db.engine, "chunks", "embedding") == "halfvec(1536)"
+
+
+async def test_0003_downgrade_fails_closed_when_chunks_present(migrated_db):
+    await _insert_chunk_row(migrated_db.engine, dims=1024)
+    with pytest.raises(RuntimeError, match="[Rr]eindex/re-upload"):
+        await migrated_db.alembic("down", "0002")
+    assert await _column_sql_type(migrated_db.engine, "chunks", "embedding") == "halfvec(1024)"
 
 
 async def test_down_drops_document_tables_without_affecting_identity(migrated_db):

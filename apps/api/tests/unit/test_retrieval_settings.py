@@ -30,6 +30,9 @@ def test_retrieval_defaults_match_design():
     assert settings.retrieval_semantic_max_distance == 0.5
     assert settings.retrieval_max_query_length == 2000
     assert settings.embedding_model == "text-embedding-3-small"
+    assert settings.embedding_provider == "openai"
+    assert settings.ollama_base_url == "http://127.0.0.1:11434"
+    assert settings.ollama_embedding_model == "qwen3-embedding:0.6b"
 
 
 def test_retrieval_fields_are_environment_configurable(monkeypatch):
@@ -95,3 +98,26 @@ def test_top_k_at_configured_max_is_accepted():
 
     assert settings.retrieval_top_k == 50
     assert settings.retrieval_top_k_max == 50
+
+
+def test_embedding_provider_is_environment_configurable(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama:11434")
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+
+    settings = _settings()
+
+    assert settings.embedding_provider == "ollama"
+    assert settings.ollama_base_url == "http://ollama:11434"
+    assert settings.ollama_embedding_model == "qwen3-embedding:0.6b"
+
+
+def test_startup_rejects_unknown_embedding_provider():
+    with pytest.raises(ValueError, match="embedding_provider"):
+        _settings(embedding_provider="cohere")
+
+
+@pytest.mark.parametrize("base_url", ["", "  ", "ftp://host", "not-a-url"])
+def test_startup_rejects_invalid_ollama_base_url(base_url):
+    with pytest.raises(ValueError, match="ollama_base_url"):
+        _settings(embedding_provider="ollama", ollama_base_url=base_url)

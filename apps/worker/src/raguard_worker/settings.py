@@ -15,16 +15,25 @@ from typing import Any, ClassVar
 from arq.connections import RedisSettings
 from arq.cron import cron
 from pydantic_settings import BaseSettings
+from raguard_api.documents.contracts import validate_ollama_base_url
 from raguard_api.documents.storage import S3ObjectStore, create_s3_client
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from raguard_worker.chunking import make_chunker
 from raguard_worker.cleanup import SqlAlchemySweepStore, sweep_stale_unready
-from raguard_worker.embeddings import OpenAIEmbedder
+from raguard_worker.embeddings import create_embedder
 from raguard_worker.jobs import SqlAlchemyDispatchStore, ingest_document
 from raguard_worker.parsers import PdfMarkdownParser
 
 _DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
+
+
+def validate_embedding_provider(*, provider: str, base_url: str) -> None:
+    """Startup guard: the embedding provider is known; Ollama needs an http(s) base URL."""
+    if provider not in ("openai", "ollama"):
+        raise ValueError(f"embedding_provider unknown: {provider!r}; require 'openai' or 'ollama'")
+    if provider == "ollama":
+        validate_ollama_base_url(base_url)
 
 
 def validate_dispatch_bounds(
@@ -52,7 +61,7 @@ async def startup(ctx: dict) -> None:
         create_s3_client(settings), bucket=settings.object_store_bucket
     )
     # PR4b: real adapters wired behind the shared contracts seams (pypdf
-    # parser, parameterized chunker, OpenAI embedder, sweep logger).
+    # parser, parameterized chunker, provider-selected embedder, sweep logger).
     ctx["parser"] = PdfMarkdownParser(
         max_pages=settings.max_pdf_pages, max_characters=settings.max_text_characters
     )
@@ -61,12 +70,7 @@ async def startup(ctx: dict) -> None:
         overlap=settings.chunk_overlap,
         max_chunks=settings.max_chunks,
     )
-    ctx["embedder"] = OpenAIEmbedder(
-        api_key=settings.openai_api_key,
-        model=settings.embedding_model,
-        batch_size=settings.embedding_batch_size,
-        timeout_seconds=settings.provider_timeout_seconds,
-    )
+    ctx["embedder"] = create_embedder(settings=settings)
     ctx["logger"] = logging.getLogger("raguard_worker")
 
 
@@ -101,6 +105,12 @@ class WorkerSettings(BaseSettings):
     embedding_batch_size: int = 64
     provider_timeout_seconds: float = 30.0
     openai_api_key: str = ""
+    # --- Embedding provider selection (ODD-1: OpenAI default, Ollama opt-in).
+    # Both providers standardize on EMBEDDING_DIMENSION (1024); switching the
+    # embedding model requires a full reindex, never mixed vectors. ---
+    embedding_provider: str = "openai"
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_embedding_model: str = "qwen3-embedding:0.6b"
     sweep_batch_size: int = 100
 
     # --- Arq worker kwargs (class-level; read from WorkerSettings.__dict__) ---
@@ -113,6 +123,7 @@ class WorkerSettings(BaseSettings):
     )
 
     def model_post_init(self, __context: Any) -> None:
+        validate_embedding_provider(provider=self.embedding_provider, base_url=self.ollama_base_url)
         validate_dispatch_bounds(
             wait_seconds=self.dispatch_wait_seconds,
             freshness_seconds=self.dispatch_freshness_seconds,

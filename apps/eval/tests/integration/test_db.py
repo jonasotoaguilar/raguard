@@ -272,7 +272,7 @@ async def _assert_seed_topology(db, seeded) -> None:
             ).scalar_one()
             assert document.tenant_id == stored.tenant_id
             (expected_vector,) = embedder.embed([content])
-            assert len(stored.embedding) == 1536
+            assert len(stored.embedding) == 1024
             # halfvec stores float16: same nonzero axes, values within rounding.
             assert list(stored.embedding) == pytest.approx(expected_vector, rel=1e-3, abs=1e-3)
             assert {i for i, v in enumerate(stored.embedding) if v != 0.0} == {

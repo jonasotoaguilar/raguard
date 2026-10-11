@@ -37,7 +37,7 @@ raguard helps organizations answer questions from their own documents — polici
 
 ### Current-State Gap (project) — reconciled 2026-08-24 at `707245a`
 
-`mvp-authz-foundation`, `mvp-document-ingestion`, `mvp-retrieval-rrf`, and `mvp-chat-citations` are delivered on `main` and archived (`openspec/specs/` + `openspec/changes/archive/`). Live on `main`: tenant identity and JWT authentication with org-scoped RBAC via the single fresh `AuthorizationResolver`/`AuthorizationScope`, first-tenant bootstrap via `raguard-bootstrap`, authorized PDF/Markdown upload with tenant-scoped list/detail (`POST /api/documents`, `GET /api/documents`), Redis/Arq ingestion pipeline (parse, chunk, embed, atomic index, failure handling, visible `pending`/`indexed`/`failed` status), permission-filtered hybrid retrieval (`POST /api/search` — FTS `simple` + `halfvec(1536)` cosine, `hnsw.ef_search`, RRF `k=60` at the application layer), and bounded request-scoped chat (`POST /api/chat` — static grounded prompt with untrusted-source delimiters, OpenAI-only completer with bounded timeout/retries/tokens, neutral `{answer: null, citations: []}` on empty/no-match, `[n]` citation verification, safe 503 envelopes). The offline evaluation harness (precision and citation-verifiability measurement), the web UI (`apps/web` remains scaffold only), document deletion, and per-document grants remain open — the next slice is `mvp-evaluation-harness` and is not yet delivered.
+`mvp-authz-foundation`, `mvp-document-ingestion`, `mvp-retrieval-rrf`, and `mvp-chat-citations` are delivered on `main` and archived (`openspec/specs/` + `openspec/changes/archive/`). Live on `main`: tenant identity and JWT authentication with org-scoped RBAC via the single fresh `AuthorizationResolver`/`AuthorizationScope`, first-tenant bootstrap via `raguard-bootstrap`, authorized PDF/Markdown upload with tenant-scoped list/detail (`POST /api/documents`, `GET /api/documents`), Redis/Arq ingestion pipeline (parse, chunk, embed, atomic index, failure handling, visible `pending`/`indexed`/`failed` status), permission-filtered hybrid retrieval (`POST /api/search` — FTS `simple` + `halfvec(1024)` cosine, `hnsw.ef_search`, RRF `k=60` at the application layer), and bounded request-scoped chat (`POST /api/chat` — static grounded prompt with untrusted-source delimiters, selectable OpenAI/Ollama completer with bounded timeout/retries/tokens, neutral `{answer: null, citations: []}` on empty/no-match, `[n]` citation verification, safe 503 envelopes). Canonical embedding dimension is 1024; migration `0003` fail-closes on populated chunks and requires reindex/re-upload. The offline evaluation harness (precision and citation-verifiability measurement), the web UI (`apps/web` remains scaffold only), document deletion, and per-document grants remain open — the next slice is `mvp-evaluation-harness` and is not yet delivered.
 
 ## 3. Target Users & Contexts
 
@@ -108,7 +108,7 @@ raguard helps organizations answer questions from their own documents — polici
 | LLM hallucination | Grounding in retrieved chunks, verifiable citations, and evaluation-set measurement |
 | Prompt-injection via documents | Document content treated as untrusted; adversarial test documents in the suite |
 | Cross-tenant leakage | Retrieval-level authorization invariant; tested as a first-class security scenario |
-| LLM/embedding provider dependency | Provider-neutral adapter; embedding provider replaceable (default OpenAI embeddings) |
+| LLM/embedding provider dependency | Provider-neutral adapter; OpenAI and Ollama selectable for embeddings and chat completions (default OpenAI) |
 | Chunking/retrieval tuning is an open area | Parameterized chunking and RRF weights; tuned against the evaluation set |
 | Version drift across stack | Versions verified at setup time; lockfiles authoritative (see README) |
 
@@ -126,7 +126,7 @@ Targets marked *draft* are confirmed when the evaluation harness and load enviro
 
 ## 10. Open Product Decisions
 
-- Embedding provider policy: default OpenAI embeddings via the neutral adapter; whether Anthropic (or others) is offered as an alternative is a product decision, not an embeddings claim — Anthropic does not provide embeddings.
+- Embedding provider policy: OpenAI and Ollama selectable for embeddings via the neutral adapter (default OpenAI); OpenAI and Ollama selectable for chat completions (default OpenAI). Anthropic is not an embeddings alternative — Anthropic does not provide embeddings.
 - Tenant provisioning: admin-invited users only (MVP default) vs. self-serve signup later.
 - Chat history: persistence scope (per-conversation, per-tenant) and retention policy.
 - Document lifecycle: deletion behavior and whether deletion removes embeddings/citations immediately.

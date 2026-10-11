@@ -43,7 +43,7 @@ Slices (stop >400): PR1 313/2; PR2 280–360/3; PR3 250–320/8; PR4 240–300/4
 
 ## Phase 5: Embedder + DB (PR6)
 
-- [x] 5.1 RED/GREEN `embedder.py`: SHA-256 token → axis `% 1536` L2; length exactly 1536. GREEN `db.py`+`seed.py`: `raguard_eval_{hex12}` via `apps/api/alembic.ini`; `DROP … WITH (FORCE)` finally. (Work units `f537a75` embedder + `65a47f0` DB/seed; focused and non-e2e checks observed green.)
+- [x] 5.1 RED/GREEN `embedder.py`: SHA-256 token → axis `% 1536` L2; length exactly 1536 (historical at build time; current canonical `EMBEDDING_DIMENSION` is 1024 via migration `0003`, which fail-closes on populated chunks and requires reindex/re-upload). GREEN `db.py`+`seed.py`: `raguard_eval_{hex12}` via `apps/api/alembic.ini`; `DROP … WITH (FORCE)` finally. (Work units `f537a75` embedder + `65a47f0` DB/seed; focused and non-e2e checks observed green.)
 
 ## Phase 6: Runner (PR7)
 

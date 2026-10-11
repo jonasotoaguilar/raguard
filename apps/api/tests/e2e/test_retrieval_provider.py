@@ -1,10 +1,10 @@
-"""E2E smoke: real OpenAI embedding against the halfvec(1536) contract (task 3.2 RED).
+"""E2E smoke: real OpenAI embedding against the halfvec(1024) contract (task 3.2 RED).
 
 Credential-gated: the whole module is skipped unless ``OPENAI_API_KEY`` is
 set, so ordinary test runs never touch the provider. The smoke embeds one
 query through the real ``OpenAIEmbedder``, asserts exactly
-``EMBEDDING_DIMENSION`` (1536) dimensions, stores the vector in a real
-``halfvec(1536)`` chunk column, and runs the tenant-filtered semantic query
+``EMBEDDING_DIMENSION`` (1024) dimensions, stores the vector in a real
+``halfvec(1024)`` chunk column, and runs the tenant-filtered semantic query
 against it — proving provider output binds cleanly to the storage contract
 (spec: "Query binds against stored embeddings"). The credential is read from
 the environment only, never logged, echoed, or asserted.
@@ -31,7 +31,7 @@ pytestmark = [
 ]
 
 
-async def test_real_provider_embedding_is_1536_dims_and_binds_to_halfvec(migrated_db):
+async def test_real_provider_embedding_is_1024_dims_and_binds_to_halfvec(migrated_db):
     embedder = OpenAIEmbedder(
         api_key=os.environ["OPENAI_API_KEY"],
         model=os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small"),
@@ -41,7 +41,7 @@ async def test_real_provider_embedding_is_1536_dims_and_binds_to_halfvec(migrate
     vectors = await asyncio.to_thread(embedder.embed, [query_text])
     assert len(vectors) == 1
     vector = vectors[0]
-    assert len(vector) == EMBEDDING_DIMENSION  # exactly 1536, per the ingestion contract
+    assert len(vector) == EMBEDDING_DIMENSION  # exactly 1024, per the ingestion contract
 
     async with migrated_db.session_factory() as session:
         tenant = Tenant(name="Provider Smoke")

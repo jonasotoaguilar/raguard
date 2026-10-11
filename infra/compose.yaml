@@ -91,6 +91,31 @@ services:
         mc mb --ignore-existing local/${OBJECT_STORE_BUCKET:-raguard-documents}
     networks: [raguard]
 
+  # Opt-in local model runtime (profile `local-ai`). Official Ollama image pinned
+  # to a stable tag — never `latest`. Models persist in the `ollama` named
+  # volume; the API port is loopback-only. No GPU/devices/privileged: CPU
+  # inference works out of the box. Start explicitly, then pull models once
+  # (see README "Local AI (Ollama)"):
+  #   docker compose -f infra/compose.yaml --profile local-ai up -d ollama
+  #   docker compose -f infra/compose.yaml exec ollama ollama pull qwen3-embedding:0.6b
+  #   docker compose -f infra/compose.yaml exec ollama ollama pull qwen3:1.7b
+  ollama:
+    image: ollama/ollama:0.34.1
+    profiles: ["local-ai"]
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    # `ollama list` talks to the loopback daemon, so a zero exit means the
+    # server is up; the image carries no curl/wget to probe with instead.
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [raguard]
+
   # Ingestion worker (apps/worker/Dockerfile). Runs the declared runtime
   # command `uv run arq raguard_worker.settings.WorkerSettings`; all settings
   # arrive as environment (credentials from .env via interpolation, never
@@ -109,6 +134,15 @@ services:
       OBJECT_STORE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
       OBJECT_STORE_REGION: us-east-1
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Embedding provider selection (WorkerSettings: EMBEDDING_PROVIDER,
+      # EMBEDDING_MODEL, OLLAMA_*). Defaults keep the OpenAI path, so the
+      # default stack never depends on the profile-gated `ollama` service.
+      # OLLAMA_BASE_URL is the in-network service URL; host-side runs use the
+      # code default http://127.0.0.1:11434 (see README "Local AI (Ollama)").
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-qwen3-embedding:0.6b}
       SWEEP_AGE_SECONDS: ${SWEEP_AGE_SECONDS:-300}
       PENDING_AGE_SECONDS: ${PENDING_AGE_SECONDS:-900}
     depends_on:
@@ -127,6 +161,7 @@ volumes:
   pgdata:
   redisdata:
   miniodata:
+  ollama:
   caddydata:
   caddyconfig:
 

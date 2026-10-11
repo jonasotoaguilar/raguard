@@ -4,7 +4,7 @@ Multi-tenant conversational RAG over internal documents: ask questions in natura
 
 ## Status
 
-> **MVP retrieval and chat delivered on `main` (merge `707245a`, 2026-08-24).** `mvp-authz-foundation`, `mvp-document-ingestion`, `mvp-retrieval-rrf`, and `mvp-chat-citations` are complete and archived under `openspec/changes/archive/` and `openspec/specs/`: tenant identity with JWT/RBAC and `raguard-bootstrap` first-tenant flow, authorized PDF/Markdown upload with tenant-scoped list/detail, Redis/Arq ingestion pipeline (parsing, chunking, provider-neutral embeddings, atomic indexing/failure handling, bounded retries, cleanup), permission-filtered hybrid retrieval (`POST /api/search` — FTS `simple` + `halfvec(1536)` cosine via pgvector HNSW, RRF `k=60` fused at the application layer, tenant predicate before ranking), and bounded request-scoped chat (`POST /api/chat` — static grounded prompt with untrusted-source delimiters, OpenAI-only completer with bounded timeout/retries/tokens, neutral `{answer: null, citations: []}` on empty/no-match, `[n]` citation verification against the exact authorized retrieved set, 503 envelope on provider or citation failure, zero provider calls on neutral paths). Verification passes: `uv run pytest -m "not e2e"` and related checks (Ruff check/format, Biome, Alembic drift, Compose config) — see [Validation & Checks](#validation--checks). **Precision evaluation harness, document deletion, per-document grants, and the web UI remain planned** — `apps/web` is still tooling/scaffold only; do not treat the next slice `mvp-evaluation-harness` as delivered.
+> **MVP retrieval and chat delivered on `main` (merge `707245a`, 2026-08-24).** `mvp-authz-foundation`, `mvp-document-ingestion`, `mvp-retrieval-rrf`, and `mvp-chat-citations` are complete and archived under `openspec/changes/archive/` and `openspec/specs/`: tenant identity with JWT/RBAC and `raguard-bootstrap` first-tenant flow, authorized PDF/Markdown upload with tenant-scoped list/detail, Redis/Arq ingestion pipeline (parsing, chunking, provider-neutral embeddings, atomic indexing/failure handling, bounded retries, cleanup), permission-filtered hybrid retrieval (`POST /api/search` — FTS `simple` + `halfvec(1024)` cosine via pgvector HNSW, RRF `k=60` fused at the application layer, tenant predicate before ranking), and bounded request-scoped chat (`POST /api/chat` — static grounded prompt with untrusted-source delimiters, selectable OpenAI/Ollama completer with bounded timeout/retries/tokens, neutral `{answer: null, citations: []}` on empty/no-match, `[n]` citation verification against the exact authorized retrieved set, 503 envelope on provider or citation failure, zero provider calls on neutral paths). Verification passes: `uv run pytest -m "not e2e"` and related checks (Ruff check/format, Biome, Alembic drift, Compose config) — see [Validation & Checks](#validation--checks). **Precision evaluation harness, document deletion, per-document grants, and the web UI remain planned** — `apps/web` is still tooling/scaffold only; do not treat the next slice `mvp-evaluation-harness` as delivered.
 
 ## What Is This?
 
@@ -68,7 +68,7 @@ raguard/
 | Docker + Docker Compose | PostgreSQL, Redis, MinIO (and later Caddy) run as containers |
 | Node.js ≥ 22.12 + `pnpm` 11 | Web app and frontend tooling (`engines`/`packageManager` fields) |
 | Python 3.13 + `uv` | API and worker services (`.python-version`, `requires-python`) |
-| An LLM provider API key | Worker embeddings (OpenAI) and, later, chat generation (OpenAI or Anthropic, adapter-based) |
+| An OpenAI API key — only for the OpenAI provider path | Model calls when `EMBEDDING_PROVIDER`/`CHAT_PROVIDER` select `openai`; the opt-in `local-ai` Ollama profile needs no key |
 
 Versions are pinned by the lockfiles and manifests (`pnpm-lock.yaml`, `uv.lock`, `.python-version`), which are authoritative over this document.
 
@@ -104,17 +104,40 @@ The Caddy reverse proxy is gated behind the `proxy` profile (`docker compose --p
 
 > **MinIO caveat:** the MinIO image in the compose stack is pinned for **local development only**. The upstream MinIO project is no longer maintained and points to AIStor; revalidate the image before any production use. Production object-storage targets are S3 or Cloudflare R2 (ADR-0006).
 
+### Local AI (Ollama) — opt-in `local-ai` profile
+
+The default stack uses OpenAI and starts no local model runtime. For a fully local, zero-provider-cost path, the compose file adds an opt-in Ollama service (`ollama/ollama:0.34.1`, never `latest`) gated behind the `local-ai` profile: models persist in the `ollama` named volume, the API port is loopback-only (`127.0.0.1:11434`), and there are no GPU/device/privileged assumptions (CPU inference works out of the box).
+
+```bash
+# Base stack first, then add Ollama (profile-gated: a plain `up` is unaffected)
+docker compose -f infra/compose.yaml up -d
+docker compose -f infra/compose.yaml --profile local-ai up -d ollama
+
+# Pull models once (multi-hundred-MB downloads; persisted in the `ollama` volume)
+docker compose -f infra/compose.yaml exec ollama ollama pull qwen3-embedding:0.6b
+docker compose -f infra/compose.yaml exec ollama ollama pull qwen3:1.7b
+
+# Smoke: daemon is up and both models are present
+docker compose -f infra/compose.yaml exec ollama ollama list
+```
+
+Select the local path with `EMBEDDING_PROVIDER=ollama` and/or `CHAT_PROVIDER=ollama` in `.env` (all selectors are documented in `.env.example`), then recreate the worker so it picks up the new environment (`docker compose -f infra/compose.yaml up -d worker`; restart a host-side API likewise). The compose `worker` reaches Ollama as `http://ollama:11434`, while host-side processes (the API runs via `uv`, not compose) use the code default `http://127.0.0.1:11434` through the published loopback port. `OPENAI_API_KEY` is only needed when a provider selects OpenAI and stays empty on the fully local path. Switching embedding models requires a full reindex — never mix vectors from different models.
+
+> **Migration note:** embeddings are standardized at 1024 dimensions (migration `0003_embedding_1024`, fail-closed). A database that already holds 1536-dim vectors refuses to migrate until its `chunks` table is empty — reindex/re-upload from source (object-store files are preserved; take a database backup first), then retry.
+
+> **Safe teardown:** `docker compose -f infra/compose.yaml down` stops containers but keeps volumes. Never run `down -v` (or `volume rm`/`prune`) unless you intend to delete PostgreSQL data, MinIO objects, Redis state, and downloaded Ollama models.
+
 ### Application Services
 
-- **`apps/api`** — FastAPI service (`apps/api/src/raguard_api`, `apps/api/alembic`, `apps/api/raguard-bootstrap`): JWT authentication (`auth/jwt.py`, `auth/router.py` — `POST /api/auth/login`), org-scoped RBAC via the single fresh `AuthorizationResolver`/`AuthorizationScope` (`authorization/`), authorized document upload with tenant-scoped list/detail and tenant-prefixed object keys (`documents/`), hybrid retrieval (`retrieval/` — `POST /api/search`, shared `retrieve_chunks`, `fusion.py` RRF `k=60`, `queries.py` FTS `simple` + `halfvec(1536)` cosine with `hnsw.ef_search`, bounded `top_k`/query validation), and bounded chat (`chat/` — `POST /api/chat`, static `SYSTEM_PROMPT` + `UNTRUSTED_SOURCES_START/END` delimiters, `providers/openai.py` OpenAI-only completer with bounded timeout/retries/`CHAT_MAX_OUTPUT_TOKENS`, neutral `{answer: null, citations: []}` on empty/no-match, `citations.py` `[n]` verification, safe 503 envelope). Alembic migrations under `apps/api/alembic`; `apps/api/raguard-bootstrap` seeds the first tenant.
+- **`apps/api`** — FastAPI service (`apps/api/src/raguard_api`, `apps/api/alembic`, `apps/api/raguard-bootstrap`): JWT authentication (`auth/jwt.py`, `auth/router.py` — `POST /api/auth/login`), org-scoped RBAC via the single fresh `AuthorizationResolver`/`AuthorizationScope` (`authorization/`), authorized document upload with tenant-scoped list/detail and tenant-prefixed object keys (`documents/`), hybrid retrieval (`retrieval/` — `POST /api/search`, shared `retrieve_chunks`, `fusion.py` RRF `k=60`, `queries.py` FTS `simple` + `halfvec(1024)` cosine with `hnsw.ef_search`, bounded `top_k`/query validation), and bounded chat (`chat/` — `POST /api/chat`, static `SYSTEM_PROMPT` + `UNTRUSTED_SOURCES_START/END` delimiters, `providers/` selectable OpenAI/Ollama completer with bounded timeout/retries/`CHAT_MAX_OUTPUT_TOKENS`, neutral `{answer: null, citations: []}` on empty/no-match, `citations.py` `[n]` verification, safe 503 envelope). Alembic migrations under `apps/api/alembic`; `apps/api/raguard-bootstrap` seeds the first tenant.
 - **`apps/worker`** — Redis + Arq ingestion worker: parsing, chunking, provider-neutral embeddings, atomic indexing/failure handling, bounded retries, and cleanup (source under `apps/worker/src/raguard_worker` — `parsers.py`, `chunking.py`, `embeddings.py`, `jobs.py`, `cleanup.py`); run via the compose `worker` service.
 - **`apps/web`** — React + Vite frontend tooling only (Vite, Vitest, Playwright, Testing Library); no application source yet.
 
 ### Environment Variables & Secrets
 
 - `.env.example` lists every variable the stack consumes; copy it to `.env` and fill in real values. `.env*` files are gitignored — never commit real credentials.
-- `OPENAI_API_KEY` is consumed by the worker's embedding adapter and by the API's retrieval embedder + chat completer (`OPENAI_API_KEY`, `EMBEDDING_MODEL`, `CHAT_MODEL`, `PROVIDER_TIMEOUT_SECONDS`, `CHAT_RETRIES`, `RETRIEVAL_SEMANTIC_MAX_DISTANCE` etc. in `.env.example`); `ANTHROPIC_API_KEY` is reserved for a future adapter and is not used by current chat (OpenAI-only, ADR-0005). Both are secrets: keep them in environment files or a secret manager, never in source code or manifests.
-- Providers are replaceable behind adapters (ADR-0005); the worker's embedding adapter and the API's `OpenAIEmbedder`/`OpenAICompleter` default to the OpenAI models pinned in `.env.example` (`text-embedding-3-small`, `gpt-4o-mini`) and nothing is hard-wired beyond the injectable `FakeEmbedder`/`FakeCompleter` used in tests.
+- `OPENAI_API_KEY` is consumed only when `EMBEDDING_PROVIDER`/`CHAT_PROVIDER` select `openai` (worker embedding adapter, API retrieval embedder + chat completer; `EMBEDDING_MODEL`, `CHAT_MODEL`, `PROVIDER_TIMEOUT_SECONDS`, `CHAT_RETRIES`, `RETRIEVAL_SEMANTIC_MAX_DISTANCE` etc. in `.env.example`); it stays empty on the fully local (ollama/ollama) path. `ANTHROPIC_API_KEY` is reserved for a future adapter. Secrets live in environment files or a secret manager, never in source code or manifests.
+- Providers are selectable behind adapters (ADR-0005): `EMBEDDING_PROVIDER`/`CHAT_PROVIDER` choose `openai` (default; `text-embedding-3-small`, `gpt-4o-mini`) or `ollama` (`qwen3-embedding:0.6b`, `qwen3:1.7b` via `OLLAMA_BASE_URL`); embeddings are standardized at 1024 dimensions for both, and nothing is hard-wired beyond the injectable `FakeEmbedder`/`FakeCompleter` used in tests.
 
 ### Validation & Checks
 

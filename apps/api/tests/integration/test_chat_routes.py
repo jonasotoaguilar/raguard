@@ -55,7 +55,8 @@ class _ContentEmbedder:
         for item in texts:
             axes = {}
             for token in item.lower().split():
-                axis = int.from_bytes(hashlib.md5(token.encode()).digest()[:4], "big") % 1536
+                digest = hashlib.md5(token.encode()).digest()[:4]
+                axis = int.from_bytes(digest, "big") % EMBEDDING_DIMENSION
                 axes[axis] = 1.0
             norm = math.sqrt(len(axes)) if axes else 1.0
             vector = [0.0] * EMBEDDING_DIMENSION

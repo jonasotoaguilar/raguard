@@ -3,7 +3,7 @@
 Both signals bind every value: the tenant predicate comes from an
 ``AuthorizationScope`` (a bound parameter, never a literal), the FTS query
 text binds as ``:query``, and the semantic embedding binds as ``:embedding``
-with an explicit ``HALFVEC(1536)`` type matching the stored column. Each
+with an explicit ``HALFVEC(1024)`` type matching the stored column. Each
 statement joins documents by tenant+document keys, orders within the signal
 with a chunk-id tiebreak, and limits candidates; fusion re-ranks by position.
 """

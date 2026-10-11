@@ -14,7 +14,12 @@ from pypdf import PdfWriter
 from pypdf.generic import DictionaryObject, NameObject, StreamObject
 from raguard_api.documents.contracts import EMBEDDING_DIMENSION
 from raguard_worker.chunking import chunk_text, make_chunker
-from raguard_worker.embeddings import OpenAIEmbedder, create_openai_client
+from raguard_worker.embeddings import (
+    OllamaEmbedder,
+    OpenAIEmbedder,
+    create_embedder,
+    create_openai_client,
+)
 from raguard_worker.jobs import ingest_document
 from raguard_worker.parsers import (
     EncryptedDocumentError,
@@ -203,10 +208,12 @@ class FakeEmbeddingsEndpoint:
 
     def __init__(self, dimension: int = EMBEDDING_DIMENSION) -> None:
         self.calls: list[tuple[str, list[str]]] = []
+        self.kwargs: list[dict] = []
         self.dimension = dimension
 
-    def create(self, *, model: str, input: list[str]) -> object:
+    def create(self, *, model: str, input: list[str], **kwargs: object) -> object:
         self.calls.append((model, list(input)))
+        self.kwargs.append(dict(kwargs))
         return _EmbeddingResponse(self.dimension, len(input))
 
 
@@ -314,6 +321,113 @@ def test_embedder_passes_timeout_to_lazy_client_factory() -> None:
 def test_default_client_factory_bounds_calls_at_30_seconds() -> None:
     client = create_openai_client(api_key="test-key", timeout_seconds=30.0)
     assert client.timeout == 30.0
+
+
+def test_openai_embed_requests_1024_dimensions() -> None:
+    embedder, endpoint = fake_embedder()
+    embedder.embed(["hello"])
+    assert endpoint.calls[0][0] == "text-embedding-3-small"
+    assert endpoint.kwargs[0]["dimensions"] == EMBEDDING_DIMENSION == 1024
+
+
+class FakeOllamaResponse:
+    def __init__(self, dimension: int, count: int) -> None:
+        self._payload = {
+            "embeddings": [
+                [float((seed + 1) * (dim + 1) / 1000) for dim in range(dimension)]
+                for seed in range(count)
+            ]
+        }
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class FakeOllamaEndpoint:
+    """Records every /api/embed post; returns deterministic 1024-wide vectors."""
+
+    def __init__(self, dimension: int = EMBEDDING_DIMENSION) -> None:
+        self.posts: list[dict] = []
+        self.dimension = dimension
+
+    def post(self, path: str, *, json: dict) -> FakeOllamaResponse:
+        self.posts.append({"path": path, "json": dict(json)})
+        return FakeOllamaResponse(self.dimension, len(json["input"]))
+
+
+def fake_ollama_embedder(**overrides) -> tuple[OllamaEmbedder, FakeOllamaEndpoint]:
+    endpoint = FakeOllamaEndpoint()
+    client = type("FakeClient", (), {"post": endpoint.post})()
+    params = {
+        "base_url": "http://127.0.0.1:11434",
+        "model": "qwen3-embedding:0.6b",
+        "batch_size": 64,
+        "timeout_seconds": 30.0,
+        "client": client,
+    }
+    params.update(overrides)
+    return OllamaEmbedder(**params), endpoint
+
+
+def test_ollama_embed_batches_at_64_per_api_call() -> None:
+    embedder, endpoint = fake_ollama_embedder()
+    vectors = embedder.embed([f"text-{index}" for index in range(130)])
+    assert [post["path"] for post in endpoint.posts] == ["/api/embed"] * 3
+    assert [len(post["json"]["input"]) for post in endpoint.posts] == [64, 64, 2]
+    assert endpoint.posts[0]["json"]["model"] == "qwen3-embedding:0.6b"
+    assert len(vectors) == 130
+    assert all(len(vector) == EMBEDDING_DIMENSION for vector in vectors)
+
+
+def test_ollama_embed_rejects_wrong_dimension_vectors() -> None:
+    endpoint = FakeOllamaEndpoint(dimension=8)
+    client = type("FakeClient", (), {"post": endpoint.post})()
+    embedder, _ = fake_ollama_embedder(client=client)
+    with pytest.raises(ValueError, match="dimension"):
+        embedder.embed(["vector with wrong width"])
+
+
+def test_ollama_client_is_built_lazily_through_factory() -> None:
+    captured: dict[str, object] = {}
+
+    def factory(*, base_url: str, timeout_seconds: float) -> object:
+        captured["base_url"] = base_url
+        captured["timeout_seconds"] = timeout_seconds
+        endpoint = FakeOllamaEndpoint()
+        return type("FakeClient", (), {"post": endpoint.post})()
+
+    embedder = OllamaEmbedder(
+        base_url="http://ollama:11434",
+        model="m",
+        batch_size=64,
+        timeout_seconds=9.0,
+        client_factory=factory,
+    )
+    assert captured == {}
+    embedder.embed(["x"])
+    assert captured == {"base_url": "http://ollama:11434", "timeout_seconds": 9.0}
+
+
+@pytest.mark.parametrize("base_url", ["", "  ", "ftp://host", "not-a-url"])
+def test_ollama_rejects_invalid_base_url(base_url: str) -> None:
+    with pytest.raises(ValueError, match="ollama_base_url"):
+        OllamaEmbedder(base_url=base_url, model="m", batch_size=64, timeout_seconds=5.0)
+
+
+def test_ollama_model_must_not_be_blank() -> None:
+    with pytest.raises(ValueError, match="model"):
+        OllamaEmbedder(
+            base_url="http://127.0.0.1:11434", model="  ", batch_size=64, timeout_seconds=5.0
+        )
+
+
+def test_worker_factory_defaults_to_openai_and_selects_ollama() -> None:
+    assert isinstance(create_embedder(settings=WorkerSettings()), OpenAIEmbedder)
+    ollama = create_embedder(settings=WorkerSettings(embedding_provider="ollama"))
+    assert isinstance(ollama, OllamaEmbedder)
 
 
 # ---------------------------------------------------------------------------

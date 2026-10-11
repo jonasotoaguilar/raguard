@@ -112,7 +112,7 @@ def test_chunks_embedding_is_halfvec_1536(metadata):
     chunks = metadata.tables["chunks"]
     column = chunks.c.embedding
     assert isinstance(column.type, HALFVEC)
-    assert column.type.dim == EMBEDDING_DIMENSION == 1536
+    assert column.type.dim == EMBEDDING_DIMENSION == 1024
 
 
 def test_chunks_composite_fk_targets_documents_tenant_and_id(metadata):
