@@ -149,6 +149,9 @@ export function DocumentDetailPage({ documentId }: { documentId: string }) {
     (detail.data && isDocumentVisibility(detail.data.visibility)
       ? detail.data.visibility
       : 'tenant')
+  // Defensive read: a malformed or partial grants payload must not take the
+  // whole page down through the error boundary (caught by the E2E suite).
+  const grantsList = grants.data?.grants ?? []
 
   async function handleVisibilitySave() {
     if (!detail.data || savingVisibility) return
@@ -312,12 +315,12 @@ export function DocumentDetailPage({ documentId }: { documentId: string }) {
               <p role="alert">Could not load grants.</p>
             )
           ) : null}
-          {grants.isSuccess && grants.data.grants.length === 0 ? (
+          {grants.isSuccess && grantsList.length === 0 ? (
             <p>No grants yet.</p>
           ) : null}
-          {grants.isSuccess && grants.data.grants.length > 0 ? (
+          {grants.isSuccess && grantsList.length > 0 ? (
             <ul>
-              {grants.data.grants.map((grant) => (
+              {grantsList.map((grant) => (
                 <li key={grant.id}>
                   {grant.grantee_type}:{grant.grantee_id}{' '}
                   <button

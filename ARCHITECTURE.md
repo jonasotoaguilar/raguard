@@ -204,7 +204,7 @@ erDiagram
     }
 ```
 
-> The ERD is the **implemented target model**. `tenants`/`users`/`roles`/`memberships`/`documents`/`chunks` are live with migrations `0001_identity_tables`, `0002_documents_chunks`, and fail-closed `0003_embedding_1024` (HNSW `halfvec(1024)` cosine, GIN `tsvector` `simple`; populated 1536-dim tables refuse migration until reindexed from source); `chunks` carries both the embedding vector and the FTS `tsvector` so both retrieval signals stay colocated. `conversations`/`messages` (and `messages.citations` as the provenance ledger) remain planned — chat persistence, history, and retention are open decisions and no chat write persists today (`POST /api/chat` is request-scoped, `POST /api/search` is stateless).
+> The ERD is the **implemented target model**. `tenants`/`users`/`roles`/`memberships`/`documents`/`chunks` are live with migrations `0001_identity_tables`, `0002_documents_chunks`, and fail-closed `0003_embedding_1024` (HNSW `halfvec(1024)` cosine, GIN `tsvector` `simple`; populated 1536-dim tables refuse migration until reindexed from source); `chunks` carries both the embedding vector and the FTS `tsvector` so both retrieval signals stay colocated. `conversations`/`messages` (and `messages.citations` as the provenance ledger) are live via migration `0004` with tenant+user-scoped history (`POST/GET/DELETE /api/conversations`, stateless `POST /api/chat` when no `conversation_id` is sent); retention is decided — TTL over `conversations.updated_at` via `CHAT_RETENTION_DAYS` (default 0 = disabled), purged out-of-band by `raguard-purge-chat`.
 
 ## Component Details **[ALWAYS]**
 
@@ -413,7 +413,7 @@ Targets marked *draft* come from the PRD and are confirmed once the evaluation h
 
 | # | Open decision | Current working assumption | Blocked by / owner |
 |---|---|---|---|
-| 1 | Chat history persistence + retention | Persist conversations/messages per tenant; retention policy pending | PRD open decision; config/product owner |
+| 1 | Chat history persistence + retention | Conversations/messages persisted per tenant (`0004`); retention decided — TTL over `conversations.updated_at` via `CHAT_RETENTION_DAYS` (default 0 = disabled/keep indefinitely), purged out-of-band by `raguard-purge-chat` | Implemented (G3); operator owns the TTL value |
 | 2 | Document deletion semantics | Deletion removes document row + chunks + embeddings immediately (assumed); not yet decided | PRD open decision |
 | 3 | Chunking strategy + RRF weights | Parameterized defaults; tuned against evaluation set | Evaluation harness |
 | 4 | Tenant provisioning | Admin-invited only in the MVP (PRD default); self-serve later | PRD open decision |

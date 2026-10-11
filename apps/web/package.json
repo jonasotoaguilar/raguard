@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "e2e": "playwright test",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },

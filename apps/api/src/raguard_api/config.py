@@ -89,6 +89,12 @@ def validate_retrieval_bounds(
         )
 
 
+def validate_chat_retention_bounds(*, retention_days: int) -> None:
+    """Startup guard: chat history retention is disabled (0) or a bounded TTL."""
+    if not 0 <= retention_days <= 3650:
+        raise ValueError(f"chat_retention_days out of bounds: {retention_days}; require 0..3650")
+
+
 def validate_rate_limit_bounds(*, requests: int, window_seconds: int) -> None:
     """Startup guard: the F4 limiter always enforces a positive bound."""
     if not 1 <= requests <= 10_000:
@@ -154,6 +160,11 @@ class Settings(BaseSettings):
     chat_provider: str = "openai"
     ollama_chat_model: str = "qwen3:1.7b"
 
+    # --- Chat history retention (G3): TTL in days over ``conversations.updated_at``.
+    # 0 (default) disables retention: history is kept indefinitely until an
+    # operator opts in explicitly by setting a positive bound. ---
+    chat_retention_days: int = 0
+
     # --- Rate limiting (task F4): per tenant+user (or client IP without
     # identity) over /api/*. Enabled by default with a safe bound; disabling
     # is an explicit operator choice. An empty rate_limit_redis_url reuses the
@@ -193,6 +204,7 @@ class Settings(BaseSettings):
             requests=self.rate_limit_requests,
             window_seconds=self.rate_limit_window_seconds,
         )
+        validate_chat_retention_bounds(retention_days=self.chat_retention_days)
 
 
 @lru_cache

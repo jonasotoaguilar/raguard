@@ -73,6 +73,7 @@ if (!process.env.VITEST) {
       await expect(page.getByRole('columnheader')).toHaveText([
         'Name',
         'Status',
+        'Actions',
       ])
       await expect(
         page.getByRole('link', { name: 'alpha-guide.pdf' }),
@@ -153,6 +154,11 @@ if (!process.env.VITEST) {
       )
       await page.route('**/api/documents/*', (route) =>
         route.fulfill(json(INDEXED_DOC)),
+      )
+      // Registered after the wildcard so it wins: the wildcard would otherwise
+      // also match /grants and answer with a document envelope.
+      await page.route('**/api/documents/*/grants', (route) =>
+        route.fulfill(json({ grants: [] })),
       )
       await loginToDocuments(page)
 

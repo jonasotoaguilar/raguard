@@ -97,7 +97,25 @@ async def _persist_turn(
     from the current max within the conversation (``func.now()`` is the
     transaction start time, so ``created_at`` alone cannot order the two
     turns of one request).
+
+    The ``SELECT ... FOR UPDATE`` on the owned conversation row serializes
+    concurrent appends to the same thread: two requests computing
+    ``max(position) + 1`` at once would read the same max and the second
+    INSERT would violate ``uq_messages_conversation_position`` (500).
+    Locking the parent row in the same transaction makes the second request
+    wait, re-read the correct max, and assign contiguous positions. The
+    lock lives here — not in the earlier ownership check — so it is held
+    only for the short write, never across retrieval/completion I/O.
     """
+    await session.execute(
+        select(Conversation)
+        .where(
+            Conversation.id == conversation.id,
+            Conversation.tenant_id == scope.tenant_id,
+            Conversation.user_id == scope.user_id,
+        )
+        .with_for_update()
+    )
     next_position = (
         await session.execute(
             select(func.coalesce(func.max(Message.position), -1)).where(

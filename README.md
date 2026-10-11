@@ -163,9 +163,25 @@ Structured JSON access logs plus liveness/readiness and Prometheus metrics — n
 - **Scraping:** point Prometheus at `api:8000/metrics` (in-network) or via Caddy once a `/metrics` route is published; scrape interval ≥15s is plenty for this cardinality. Run uvicorn with `--no-access-log` to keep a single access stream — the module deliberately never configures uvicorn loggers (documented in `observability.py`). The compose `api` service carries an `/health`-based `healthcheck`.
 - Tests: `apps/api/tests/unit/test_observability.py` (registry exposition, request-id generate/propagate, formatter fields, `/ready` 503 with faked checks, template labels, rate-limit bypass).
 
+### Operations (Prometheus, backups, load test)
+
+- **Prometheus (`observability` profile):** `infra/prometheus.yml` scrapes `api:8000/metrics` every 15s (plus Prometheus itself); `infra/alerts.yml` defines `ApiDown`, `HighErrorRate`, `HighLatencyP95` (PRD KPI p95 < 10 s), `NotReady`, and `RateLimitSurge` — each with `expr`, `for`, `severity`, and actionable summary/description. Both files mount read-only; TSDB persists in the `prometheusdata` volume. Start alongside the app stack (default `up` is unchanged):
+
+  ```bash
+  docker compose -f infra/compose.yaml --profile app --profile observability up -d
+  # Prometheus UI at http://localhost:9090 — check Status > Targets, then Alerts.
+  ```
+
+- **Backup/restore:** `scripts/backup-postgres.sh` (`pg_dump --format=custom`, timestamped dest, env credentials, non-empty check) and `scripts/restore-postgres.sh` (requires `CONFIRM_RESTORE=yes`, overwrites the target). Both take `--help`. Full procedure, post-restore verification, and the migration-`0003` reindex note live in `docs/runbooks/backup-restore.md`.
+- **Load test (PRD KPI p95 < 10 s):** `scripts/loadtest.py` (httpx only, no new deps) fires N concurrent `POST /api/chat` (or `--endpoint search`) requests and reports p50/p95/p99, throughput, and error rate; exit `2` when p95 exceeds `--threshold` (default 10 s). Example: `RAGUARD_BASE_URL=http://localhost:8000 RAGUARD_TOKEN=<jwt> .venv/bin/python scripts/loadtest.py --requests 50 --concurrency 5`. Without a token, requests 401 and count as errors.
+
 ### Rate Limiting
 
 Every `/api/*` route is guarded per tenant+user (or client IP without a verified identity): `RATE_LIMIT_REQUESTS` requests per `RATE_LIMIT_WINDOW_SECONDS` seconds (defaults 60/60, `RATE_LIMIT_ENABLED=true` to bypass explicitly). Identity comes from the verified session JWT (cookie or `Authorization: Bearer`); otherwise the direct peer IP is used — `X-Forwarded-For` is honored only when `TRUST_PROXY_HEADERS=true` (default false, so untrusted headers never widen or poison buckets; with exactly one trusted proxy the RIGHTMOST hop is used, since the proxy appends the observed peer last and left hops are client-spoofable). Over the limit, the API returns the safe `429 {error: {code: "rate_limited"}}` envelope with a `Retry-After` header and no internal detail; `/health`, `/metrics`, and non-`/api/` paths are never limited. State lives in Redis sorted sets (`RATELIMIT_REDIS_URL`, defaulting to the job-queue Redis) as a true sliding window over the current plus previous bucket (`ratelimit:{tenant}:{subject}:{bucket}`); if Redis is unreachable the limiter degrades to an in-process per-worker counter enforcing the same bound (never unlimited) and logs one warning per window. See `apps/api/src/raguard_api/ratelimit.py` and `RateLimitMiddleware` in `apps/api/src/raguard_api/main.py`; unit contract in `apps/api/tests/unit/test_ratelimit.py`, Redis-backed integration in `apps/api/tests/integration/test_ratelimit_redis.py` (skipped without the local stack, run in CI).
+
+### Chat History Retention
+
+Chat history (`conversations`/`messages`, migration `0004`) grows without bound unless purged. Retention is a TTL over `conversations.updated_at`, configured by `CHAT_RETENTION_DAYS` (default `0` = disabled, history kept indefinitely — the conservative default so no existing data is deleted without an explicit operator decision; valid range `0..3650`, enforced at startup). The purge is tenant-agnostic and runs out-of-band via the `raguard-purge-chat` console script (`apps/api/src/raguard_api/chat/retention.py:main`, declared in `apps/api/pyproject.toml`), which deletes conversations older than `now() - retention_days` with their messages in one transaction (migration `0004` carries no `ON DELETE CASCADE`, so messages are deleted explicitly first) and prints `deleted=<n> retention_days=<d>`. Only bound parameters are used and logs carry the summary count, never message content. To enable, set `CHAT_RETENTION_DAYS` (e.g. `90`) and schedule the script — e.g. a daily cron/systemd timer (`0 3 * * * raguard-purge-chat`) against the same `DATABASE_URL` and environment as the API. Covered by `apps/api/tests/unit/test_chat_retention.py` and `apps/api/tests/integration/test_chat_retention.py` (skipped without the local stack, run in CI).
 
 ### Row-Level Security Hardening (opt-in)
 
@@ -202,10 +218,21 @@ The `raguard_app` role holds no grants on `users`/`tenants` and no router sets `
 | `uv run ruff check .` | Lint check for Python | Passes |
 | `uv run ruff format --check .` | Format check for Python | Passes |
 | `uv run pytest -m "not e2e"` | Python unit/integration tests (e2e excluded) — authorization, retrieval, chat, citation, isolation and release gates (credential-gated provider tests are `e2e`, skipped by default) | Passes |
+| `pnpm --filter @raguard/web run e2e` | Web E2E (Playwright, Chromium) — `apps/web/e2e/` (`auth`, `chat`, `citations`, `documents`); mocks the full API via `page.route`, needs only the Vite dev server (started by `playwright.config.ts` `webServer`), no backend or credentials; runs in CI (`web-e2e` job) | Passes |
 | Alembic drift check | Migration drift (`apps/api/alembic.ini`) | Passes — no new upgrade operations |
 | `docker compose -f infra/compose.yaml config` | Validates the compose stack | Passes once `.env` exists |
 
 > Counts are intentionally not pinned — run the commands above for the current totals. At `707245a` the non-e2e suite reported 249 passed, 127 skipped.
+
+> **Running web E2E locally:** `cd apps/web && pnpm exec playwright install chromium && pnpm run e2e` (or `./node_modules/.bin/playwright test`).
+>
+> **API E2E stays opt-in:** `apps/api/tests/e2e/` (`uv run pytest -m e2e`) requires a real `OPENAI_API_KEY` and makes live provider calls, so it is credential-gated and intentionally NOT in CI — run it manually when you need the provider smoke.
+
+### Dependency Maintenance (Dependabot + `minimumReleaseAge`)
+
+Dependabot policy is versioned in `.github/dependabot.yml` (weekly, grouped per ecosystem: `npm` for `pnpm-lock.yaml`, `uv` for `uv.lock`, `github-actions` for workflows). There are no `ignore` rules hiding security updates.
+
+`pnpm-workspace.yaml` sets `minimumReleaseAge: 20160` (14 days), so freshly published versions are rejected at install time. When Dependabot proposes a version younger than 14 days, the updater job fails with a resolution/install error even though the version is correct. Procedure: if the update is a SECURITY fix, add the package to `minimumReleaseAgeExclude` (as already done for seroval / source-map-js / undici); otherwise wait for the version to age out and let the next weekly run pick it up.
 
 ### Git Hooks (Lefthook)
 
