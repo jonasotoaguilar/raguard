@@ -49,8 +49,8 @@ raguard is a self-hosted, multi-tenant RAG over PDF/Markdown: `apps/api` (FastAP
 | DB & migrations | `apps/api/src/raguard_api/db.py`, `apps/api/alembic/versions/0001_identity_tables.py`, `apps/api/alembic/versions/0002_documents_chunks.py` | Async SQLAlchemy, `0001` identity tables, `0002` documents/chunks with HNSW + GIN indexes |
 | Infra & config | `infra/compose.yaml`, `infra/Caddyfile`, `.env.example`, `apps/api/src/raguard_api/config.py` | Local stack (postgres pgvector, redis, minio, worker, caddy proxy profile), environment bounds |
 | Evaluation harness (offline) | `apps/eval/src/raguard_eval/cli.py`, `apps/eval/src/raguard_eval/runner.py`, `apps/eval/src/raguard_eval/dataset.py`, `eval/datasets/mvp-v1/`, `eval/config.json` | `uv run raguard-eval --dataset eval/datasets/mvp-v1 --config eval/config.json --output eval/reports/latest.json` → deterministic `eval/reports/latest.json` (exits 0/2/3/1); CI python job gates without `--fail-under-precision` |
-| Specs & ADRs | `openspec/specs/`, `openspec/changes/archive/`, `docs/adr/` | Canonical specs (tenant-identity, jwt-authentication, authorization-rbac, documents, retrieval, chat), archive, ADRs 0001–0006 |
-| Web | `apps/web/` | Scaffold only — Vite/React/TanStack Router/Query, Vitest, Playwright; no application source yet |
+| Specs & ADRs | `openspec/specs/`, `openspec/changes/archive/`, `docs/adr/` | Canonical specs (tenant-identity, jwt-authentication, authorization-rbac, documents, retrieval, chat, evaluation), archive (incl. `2026-10-11-mvp-evaluation-harness`), ADRs 0001–0006 |
+| Web | `apps/web/` | Delivered — chat with citations/source preview, documents library/detail/upload, admin views (TanStack Router/Query, Vitest, Playwright) |
 
 ## Subsystem ownership
 
@@ -58,7 +58,7 @@ raguard is a self-hosted, multi-tenant RAG over PDF/Markdown: `apps/api` (FastAP
 |-----------|------------|----------|
 | `apps/api` — API monolith | `apps/api/src/raguard_api/` | Owns HTTP surface, authorization, retrieval, chat, document enqueue, org admin; stateless, tenant-scoped via `AuthorizationScope` |
 | `apps/worker` — ingestion worker | `apps/worker/src/raguard_worker/` | Owns async parse/chunk/embed/index, bounded retries, cleanup; single coupling via PostgreSQL + Redis queue + S3 object store |
-| `apps/web` — frontend | `apps/web/` | Owns UI shell when built; today tooling only; same-domain `/api` via Caddy |
+| `apps/web` — frontend | `apps/web/` | Owns chat, documents, and admin UI; same-domain `/api` via Caddy |
 | `infra` — deployment | `infra/compose.yaml`, `infra/Caddyfile` | Owns local topology and proxy; no app logic |
 | `docs` — decisions & navigation | `docs/adr/`, `docs/CODEBASE-GUIDE.md`, `docs/codebase/` | Owns durable choices and navigational index, not product behavior |
 

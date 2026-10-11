@@ -4,7 +4,7 @@ Multi-tenant conversational RAG over internal documents: ask questions in natura
 
 ## Status
 
-> **MVP retrieval and chat delivered on `main` (merge `707245a`, 2026-08-24).** `mvp-authz-foundation`, `mvp-document-ingestion`, `mvp-retrieval-rrf`, and `mvp-chat-citations` are complete and archived under `openspec/changes/archive/` and `openspec/specs/`: tenant identity with JWT/RBAC and `raguard-bootstrap` first-tenant flow, authorized PDF/Markdown upload with tenant-scoped list/detail, Redis/Arq ingestion pipeline (parsing, chunking, provider-neutral embeddings, atomic indexing/failure handling, bounded retries, cleanup), permission-filtered hybrid retrieval (`POST /api/search` — FTS `simple` + `halfvec(1024)` cosine via pgvector HNSW, RRF `k=60` fused at the application layer, tenant predicate before ranking), and bounded request-scoped chat (`POST /api/chat` — static grounded prompt with untrusted-source delimiters, selectable OpenAI/Ollama completer with bounded timeout/retries/tokens, neutral `{answer: null, citations: []}` on empty/no-match, `[n]` citation verification against the exact authorized retrieved set, 503 envelope on provider or citation failure, zero provider calls on neutral paths). Verification passes: `uv run pytest -m "not e2e"` and related checks (Ruff check/format, Biome, Alembic drift, Compose config) — see [Validation & Checks](#validation--checks). **Precision evaluation harness, document deletion, per-document grants, and the web UI remain planned** — `apps/web` is still tooling/scaffold only; do not treat the next slice `mvp-evaluation-harness` as delivered.
+> **MVP retrieval, chat, offline precision evaluation, and web UI delivered on `main`.** `mvp-authz-foundation`, `mvp-document-ingestion`, `mvp-retrieval-rrf`, `mvp-chat-citations`, and `mvp-evaluation-harness` are complete: the change is archived under `openspec/changes/archive/2026-10-11-mvp-evaluation-harness/` and the spec is promoted to `openspec/specs/evaluation/spec.md` (PRs #32/#38/#39/#41/#42/#43/#45/#46 MERGED; work-unit `dcca1ae`). Delivered on `main`: tenant identity with JWT/RBAC and `raguard-bootstrap` first-tenant flow, authorized PDF/Markdown upload with tenant-scoped list/detail, Redis/Arq ingestion pipeline (parsing, chunking, provider-neutral embeddings, atomic indexing/failure handling, bounded retries, cleanup), permission-filtered hybrid retrieval (`POST /api/search` — FTS `simple` + `halfvec(1024)` cosine via pgvector HNSW, RRF `k=60` fused at the application layer, tenant predicate before ranking), bounded request-scoped chat (`POST /api/chat` — static grounded prompt with untrusted-source delimiters, selectable OpenAI/Ollama completer with bounded timeout/retries/tokens, neutral `{answer: null, citations: []}` on empty/no-match, `[n]` citation verification against the exact authorized retrieved set, 503 envelope on provider or citation failure, zero provider calls on neutral paths), offline precision evaluation harness (`uv run raguard-eval` over `eval/datasets/mvp-v1`, CI-gated), and the web UI (`apps/web` — chat with citations and source preview, documents library/detail/upload, admin organization views; PRs #47–#61 and #64 MERGED). Document deletion and per-document grants remain planned.
 
 ## What Is This?
 
@@ -29,8 +29,8 @@ It is designed to run with standard, replaceable components (PostgreSQL, Redis, 
 | Hybrid retrieval | Embeddings + PostgreSQL FTS/vector search, RRF fusion (`k=60`, candidates 50, deterministic tie-break) | Implemented — `POST /api/search`, `apps/api/src/raguard_api/retrieval/` |
 | Permission-filtered retrieval | Chunks a user cannot access never reach generation (tenant predicate before ranking, `AuthorizationScope`) | Implemented — shared `retrieve_chunks` for search and chat |
 | Verifiable citations | Answers cite retrievable chunks with links back to the source (`[n]` → verified `Citation`) | Implemented — `POST /api/chat`, `apps/api/src/raguard_api/chat/citations.py` |
-| Chat interface | API chat with grounded answers; web conversation history still planned | Implemented (API) / Planned (web) — `POST /api/chat` live, `apps/web` scaffold only |
-| Precision evaluation | Offline harness to measure retrieval/generation quality before shipping changes | Planned — next slice `mvp-evaluation-harness` |
+| Chat interface | API chat with grounded answers plus web conversation UI | Implemented (API + web) — `POST /api/chat` live, `apps/web` chat/documents/admin routes delivered |
+| Precision evaluation | Offline harness to measure retrieval/generation quality before shipping changes | Implemented — archived `2026-10-11-mvp-evaluation-harness`, spec `openspec/specs/evaluation/spec.md` |
 | Prompt-injection protection | Document content cannot override system or user instructions (sources as delimited untrusted data) | Implemented — static `SYSTEM_PROMPT`, `UNTRUSTED_SOURCES_START/END`, adversarial gates |
 
 ## Security & Authorization Invariant
@@ -44,7 +44,7 @@ raguard/
 ├── apps/
 │   ├── api/        # FastAPI — JWT auth, org-scoped RBAC, documents, retrieval (FTS+vector+RRF), chat+citations, Alembic
 │   ├── worker/     # Arq ingestion worker — parsing, chunking, embeddings, indexing, cleanup
-│   └── web/        # React + Vite frontend — tooling config only, no application source yet
+│   └── web/        # React + Vite frontend — chat, documents, admin routes with Vitest/Playwright coverage
 ├── docs/
 │   ├── adr/                 # ADR-0001..0006: architecture decision records
 │   ├── CODEBASE-GUIDE.md    # Navigational index — start-here paths, ownership, flows, tests
@@ -52,8 +52,8 @@ raguard/
 │       └── mental-model.md  # Detailed mental model for the monorepo (keeps the guide concise)
 ├── infra/          # Docker Compose local stack (worker service + Caddy proxy profile) + Caddyfile
 ├── openspec/
-│   ├── specs/      # Canonical specs: tenant-identity, jwt-authentication, authorization-rbac, documents, retrieval, chat
-│   └── changes/archive/  # SDD archive: mvp-authz-foundation, mvp-document-ingestion, mvp-retrieval-rrf, mvp-chat-citations
+│   ├── specs/      # Canonical specs: tenant-identity, jwt-authentication, authorization-rbac, documents, retrieval, chat, evaluation
+│   └── changes/archive/  # SDD archive: mvp-authz-foundation, mvp-document-ingestion, mvp-retrieval-rrf, mvp-chat-citations, mvp-evaluation-harness
 ├── PRD.md          # Product intent, scope, invariants, success criteria
 ├── ARCHITECTURE.md # System design (current status reflects mvp-chat-citations)
 └── DESIGN.md       # UI design direction (draft)
@@ -100,7 +100,7 @@ docker compose -f infra/compose.yaml config
 docker compose -f infra/compose.yaml up -d
 ```
 
-The Caddy reverse proxy is gated behind the `proxy` profile (`docker compose --profile proxy up`); it routes to `apps/api` and `apps/web`, neither of which runs in the default stack (the API is not yet a compose service and the web app has no source), so it becomes useful only once those services are implemented.
+The Caddy reverse proxy is gated behind the `proxy` profile (`docker compose --profile proxy up`); it routes to `apps/api` and `apps/web`. Neither runs in the default stack (compose wires infrastructure plus the worker; the API runs on the host via `uv`), so the proxy profile becomes useful once those services run alongside it.
 
 > **MinIO caveat:** the MinIO image in the compose stack is pinned for **local development only**. The upstream MinIO project is no longer maintained and points to AIStor; revalidate the image before any production use. Production object-storage targets are S3 or Cloudflare R2 (ADR-0006).
 
@@ -131,7 +131,7 @@ Select the local path with `EMBEDDING_PROVIDER=ollama` and/or `CHAT_PROVIDER=oll
 
 - **`apps/api`** — FastAPI service (`apps/api/src/raguard_api`, `apps/api/alembic`, `apps/api/raguard-bootstrap`): JWT authentication (`auth/jwt.py`, `auth/router.py` — `POST /api/auth/login`), org-scoped RBAC via the single fresh `AuthorizationResolver`/`AuthorizationScope` (`authorization/`), authorized document upload with tenant-scoped list/detail and tenant-prefixed object keys (`documents/`), hybrid retrieval (`retrieval/` — `POST /api/search`, shared `retrieve_chunks`, `fusion.py` RRF `k=60`, `queries.py` FTS `simple` + `halfvec(1024)` cosine with `hnsw.ef_search`, bounded `top_k`/query validation), and bounded chat (`chat/` — `POST /api/chat`, static `SYSTEM_PROMPT` + `UNTRUSTED_SOURCES_START/END` delimiters, `providers/` selectable OpenAI/Ollama completer with bounded timeout/retries/`CHAT_MAX_OUTPUT_TOKENS`, neutral `{answer: null, citations: []}` on empty/no-match, `citations.py` `[n]` verification, safe 503 envelope). Alembic migrations under `apps/api/alembic`; `apps/api/raguard-bootstrap` seeds the first tenant.
 - **`apps/worker`** — Redis + Arq ingestion worker: parsing, chunking, provider-neutral embeddings, atomic indexing/failure handling, bounded retries, and cleanup (source under `apps/worker/src/raguard_worker` — `parsers.py`, `chunking.py`, `embeddings.py`, `jobs.py`, `cleanup.py`); run via the compose `worker` service.
-- **`apps/web`** — React + Vite frontend tooling only (Vite, Vitest, Playwright, Testing Library); no application source yet.
+- **`apps/web`** — React + Vite frontend (TanStack Router/Query, Vitest, Playwright): chat with citations and source preview, documents library/detail/upload, admin organization views, login shell.
 
 ### Environment Variables & Secrets
 
@@ -164,14 +164,14 @@ Lefthook is installed and active (`lefthook.yml`):
 
 | Document | Purpose | Status |
 |---|---|---|
-| [PRD.md](./PRD.md) | Product intent, scope, invariants, success criteria | Ready — acceptance reconciled at `707245a` (evaluation harness still planned) |
+| [PRD.md](./PRD.md) | Product intent, scope, invariants, success criteria | Ready — evaluation harness and web UI delivered |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | System/API design | Ready — reflects `mvp-chat-citations`; target architecture preserved, open decisions retained |
 | [DESIGN.md](./DESIGN.md) | UI/UX design direction | Draft — target design, pending implementation |
 | [docs/CODEBASE-GUIDE.md](./docs/CODEBASE-GUIDE.md) | Navigational index — start-here, ownership, flows, tests | Ready |
 | [docs/codebase/mental-model.md](./docs/codebase/mental-model.md) | Detailed mental model for the monorepo | Ready |
 | [docs/adr/](./docs/adr/) | Architecture decision records (0001–0006) | Ready |
-| [openspec/specs/](./openspec/specs/) | Canonical specs — `tenant-identity`, `jwt-authentication`, `authorization-rbac`, `documents`, `retrieval`, `chat` | Ready |
-| [openspec/changes/archive/](./openspec/changes/archive/) | SDD archive — `mvp-authz-foundation`, `mvp-document-ingestion`, `mvp-retrieval-rrf`, `mvp-chat-citations` | Ready |
+| [openspec/specs/](./openspec/specs/) | Canonical specs — `tenant-identity`, `jwt-authentication`, `authorization-rbac`, `documents`, `retrieval`, `chat`, `evaluation` | Ready |
+| [openspec/changes/archive/](./openspec/changes/archive/) | SDD archive — `mvp-authz-foundation`, `mvp-document-ingestion`, `mvp-retrieval-rrf`, `mvp-chat-citations`, `mvp-evaluation-harness` | Ready |
 
 ## License
 
