@@ -3,6 +3,7 @@
 import asyncio
 from logging.config import fileConfig
 
+import raguard_api.chat.models  # noqa: F401  # register models in Base.metadata
 import raguard_api.documents.models  # noqa: F401  # register models in Base.metadata
 import raguard_api.identity.models  # noqa: F401  # register models in Base.metadata
 from alembic import context

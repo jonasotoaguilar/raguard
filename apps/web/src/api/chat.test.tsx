@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { CHAT_API_PATH, postChat } from './chat'
+import {
+  CHAT_API_PATH,
+  CONVERSATIONS_API_PATH,
+  createConversation,
+  deleteConversation,
+  getConversation,
+  listConversations,
+  postChat,
+} from './chat'
 import { ApiError } from './client'
 
 function jsonResponse(
@@ -109,5 +117,114 @@ describe('postChat', () => {
     controller.abort()
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
     expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
+  })
+
+  it('sends conversation_id only when a conversation is selected', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse(200, { answer: 'Hi [1].', citations: [] }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await postChat('alpha', { conversationId: 'conv-1' })
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      query: 'alpha',
+      conversation_id: 'conv-1',
+    })
+  })
+})
+
+describe('conversations client', () => {
+  it('lists conversations from /api/conversations', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        conversations: [
+          { id: 'c1', title: 'First', created_at: 't', updated_at: 't' },
+        ],
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await listConversations()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      CONVERSATIONS_API_PATH,
+      expect.objectContaining({ credentials: 'include' }),
+    )
+    expect(result.conversations).toHaveLength(1)
+  })
+
+  it('creates a conversation with an empty body by default', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse(201, {
+          id: 'c1',
+          title: 'New conversation',
+          created_at: 't',
+          updated_at: 't',
+        }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await createConversation()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      CONVERSATIONS_API_PATH,
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({})
+    expect(result.id).toBe('c1')
+  })
+
+  it('reads one conversation by encoded id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: 'c1',
+        title: 'First',
+        created_at: 't',
+        updated_at: 't',
+        messages: [],
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await getConversation('c1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${CONVERSATIONS_API_PATH}/c1`,
+      expect.objectContaining({ credentials: 'include' }),
+    )
+    expect(result.messages).toEqual([])
+  })
+
+  it('deletes by encoded id and surfaces the neutral 404', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await deleteConversation('c1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${CONVERSATIONS_API_PATH}/c1`,
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(404, {
+            error: { code: 'not_found', message: 'Missing' },
+          }),
+        ),
+    )
+    await expect(deleteConversation('gone')).rejects.toMatchObject({
+      status: 404,
+    })
   })
 })

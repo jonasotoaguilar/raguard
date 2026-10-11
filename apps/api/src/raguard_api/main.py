@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from raguard_api.auth.router import create_auth_router
 from raguard_api.chat.providers import create_completer
-from raguard_api.chat.router import create_chat_router
+from raguard_api.chat.router import create_chat_router, create_conversations_router
 from raguard_api.config import Settings, get_settings
 from raguard_api.documents.queue import ArqJobQueue
 from raguard_api.documents.router import create_documents_router
@@ -57,4 +57,5 @@ def create_app(*, settings: Settings, session_factory: async_sessionmaker[AsyncS
             completer=completer,
         )
     )
+    app.include_router(create_conversations_router(session_factory=session_factory))
     return app
