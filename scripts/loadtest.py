@@ -13,8 +13,10 @@ Usage:
     RAGUARD_BASE_URL=http://localhost:8000 RAGUARD_TOKEN=<jwt> \\
         .venv/bin/python scripts/loadtest.py --endpoint search --requests 100
 
-Auth: pass --token or set RAGUARD_TOKEN (sent as `Authorization: Bearer`).
-Without a token, expect 401s — they count as errors in the report.
+Auth: the API authenticates through the HttpOnly session cookie, so pass
+``--cookie "raguard_session=<jwt>"`` or set ``RAGUARD_COOKIE``. ``--token``
+(Bearer) is kept for deployments that front the API with token auth. Without
+either, expect 401s — they count as errors in the report.
 """
 
 from __future__ import annotations
@@ -55,6 +57,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD_SECONDS)
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--token", default=os.environ.get("RAGUARD_TOKEN", ""))
+    parser.add_argument(
+        "--cookie",
+        default=os.environ.get("RAGUARD_COOKIE", ""),
+        help=(
+            "Session cookie sent as 'name=value'. The API authenticates through "
+            "the HttpOnly session cookie (not Bearer), so this is the supported "
+            "way to load-test an authenticated endpoint."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.requests < 1 or args.concurrency < 1:
         parser.error("--requests and --concurrency must be >= 1")
@@ -76,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
     url = args.base_url.rstrip("/") + f"/api/{args.endpoint}"
     payload = {"query": args.query}
     headers = {"Authorization": f"Bearer {args.token}"} if args.token else {}
+    if args.cookie:
+        headers["Cookie"] = args.cookie
 
     try:
         client = httpx.Client(base_url=args.base_url, headers=headers, timeout=args.timeout)
