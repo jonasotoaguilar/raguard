@@ -202,10 +202,15 @@ The `raguard_app` role holds no grants on `users`/`tenants` and no router sets `
 | `uv run ruff check .` | Lint check for Python | Passes |
 | `uv run ruff format --check .` | Format check for Python | Passes |
 | `uv run pytest -m "not e2e"` | Python unit/integration tests (e2e excluded) — authorization, retrieval, chat, citation, isolation and release gates (credential-gated provider tests are `e2e`, skipped by default) | Passes |
+| `pnpm --filter @raguard/web run e2e` | Web E2E (Playwright, Chromium) — `apps/web/e2e/` (`auth`, `chat`, `citations`, `documents`); mocks the full API via `page.route`, needs only the Vite dev server (started by `playwright.config.ts` `webServer`), no backend or credentials; runs in CI (`web-e2e` job) | Passes |
 | Alembic drift check | Migration drift (`apps/api/alembic.ini`) | Passes — no new upgrade operations |
 | `docker compose -f infra/compose.yaml config` | Validates the compose stack | Passes once `.env` exists |
 
 > Counts are intentionally not pinned — run the commands above for the current totals. At `707245a` the non-e2e suite reported 249 passed, 127 skipped.
+
+> **Running web E2E locally:** `cd apps/web && pnpm exec playwright install chromium && pnpm run e2e` (or `./node_modules/.bin/playwright test`).
+>
+> **API E2E stays opt-in:** `apps/api/tests/e2e/` (`uv run pytest -m e2e`) requires a real `OPENAI_API_KEY` and makes live provider calls, so it is credential-gated and intentionally NOT in CI — run it manually when you need the provider smoke.
 
 ### Git Hooks (Lefthook)
 

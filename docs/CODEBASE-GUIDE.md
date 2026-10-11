@@ -82,8 +82,9 @@ raguard is a self-hosted, multi-tenant RAG over PDF/Markdown: `apps/api` (FastAP
 |-------|---------|-------|
 | Unit (no DB) | `uv run pytest -m "not e2e" --collect-only` lists 378 items | `apps/api/tests/unit/test_*.py` — capabilities, JWT, passwords, retrieval queries/fusion, chat prompts/citations/providers, document adapters/models |
 | Integration (real PostgreSQL) | `uv run pytest -m "not e2e"` (249 passed, 127 skipped at `707245a`; `e2e` deselected) | `apps/api/tests/integration/test_*.py` — `test_retrieval_*`, `test_chat_routes.py`, `test_chat_release_gates.py`, `test_retrieval_isolation.py`, `test_isolation_gates.py`, `test_release_gates.py`, `test_documents_routes.py`, `test_org_routes.py`, `test_login.py`, `test_bootstrap.py`, etc. |
-| E2E / provider smoke (credential-gated) | `uv run pytest -m e2e` (requires `OPENAI_API_KEY`) | `apps/api/tests/e2e/test_retrieval_provider.py`, `apps/api/tests/e2e/test_chat_e2e.py` |
-| JS/TS | `pnpm test` | `apps/web/` — Vitest (`--passWithNoTests` when no test files) |
+| E2E / provider smoke (credential-gated, opt-in — not in CI) | `uv run pytest -m e2e` (requires `OPENAI_API_KEY`; live provider calls, never run without a key) | `apps/api/tests/e2e/test_retrieval_provider.py`, `apps/api/tests/e2e/test_chat_e2e.py` |
+| JS/TS | `pnpm test` | `apps/web/` — Vitest (`--passWithNoTests` when no test files; `e2e/**` excluded in `vitest.config.ts`, plus an `if (!process.env.VITEST)` registration guard in the specs) |
+| Web E2E (CI) | `pnpm --filter @raguard/web run e2e` (local: `cd apps/web && pnpm exec playwright install chromium && pnpm run e2e`) | `apps/web/e2e/` — Playwright (`auth`, `chat`, `citations`, `documents`); full API mocked via `page.route`, Vite dev server only, no backend/credentials; `web-e2e` CI job (Chromium, report artifact) |
 | Lint/format | `pnpm exec biome check .`, `uv run ruff check .`, `uv run ruff format --check .` | Repo-wide |
 | Migration drift | `alembic -c apps/api/alembic.ini check` (wrapped by project checks) | `apps/api/alembic/` |
 | Compose config | `docker compose -f infra/compose.yaml config` | `infra/` |
