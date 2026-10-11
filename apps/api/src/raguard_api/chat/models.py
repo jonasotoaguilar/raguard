@@ -3,11 +3,13 @@
 Constraints mirror apps/api/alembic/versions/0004_conversations_messages.py exactly:
 - conversations: tenant+user scoped threads with a title, (tenant_id, id)
   unique backing the messages composite FK, tenant-leading index for
-  recency-ordered listing;
+  recency-ordered listing, BIGSERIAL ``seq`` as the deterministic
+  newest-first tiebreak;
 - messages: role restricted to the user/assistant allowlist, citations as a
   JSONB payload defaulting to '[]', composite tenant+conversation FK
   preventing cross-tenant message attachment, conversation-leading index for
-  chronological reads.
+  chronological reads, per-conversation ``position`` (unique per
+  conversation) as the chronological order key.
 
 Tenant and user identity live only here, never on the public contract surface
 (raguard_api.chat.contracts).
@@ -18,11 +20,14 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
+    Sequence,
     Text,
     UniqueConstraint,
     Uuid,
@@ -56,6 +61,12 @@ class Conversation(Base):
         Uuid, ForeignKey("users.id", name="fk_conversations_user_id"), nullable=False
     )
     title: Mapped[str] = mapped_column(Text, nullable=False)
+    seq: Mapped[int] = mapped_column(
+        BigInteger,
+        Sequence("conversations_seq", optional=True),
+        server_default=text("nextval('conversations_seq')"),
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -75,6 +86,7 @@ class Message(Base):
             name="fk_messages_tenant_conversation",
         ),
         CheckConstraint(_MESSAGE_ROLE_SQL, name="ck_messages_role"),
+        UniqueConstraint("conversation_id", "position", name="uq_messages_conversation_position"),
         Index("ix_messages_conversation_created", "conversation_id", "created_at"),
     )
 
@@ -90,6 +102,7 @@ class Message(Base):
     role: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     citations: Mapped[Any] = mapped_column(JSONB, nullable=False, server_default=text("'[]'"))
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

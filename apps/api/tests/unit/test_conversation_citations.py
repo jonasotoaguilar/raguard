@@ -28,6 +28,7 @@ def _row(citations: list[dict]) -> object:
         role="assistant",
         content="Grounded [1].",
         citations=citations,
+        position=1,
         created_at=datetime.now(UTC),
     )
 
@@ -80,6 +81,7 @@ def test_user_message_without_citations_passes_through():
         role="user",
         content="alpha",
         citations=[],
+        position=0,
         created_at=datetime.now(UTC),
     )
     message = _history_message(row, visible_document_ids=set())

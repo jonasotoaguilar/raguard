@@ -77,3 +77,27 @@ def test_messages_chronological_index_leads_with_conversation(metadata):
     messages = metadata.tables["messages"]
     indexes = {index.name: [column.name for column in index.columns] for index in messages.indexes}
     assert indexes["ix_messages_conversation_created"] == ["conversation_id", "created_at"]
+
+
+def test_conversations_seq_is_non_nullable_bigint_for_deterministic_newest_first(metadata):
+    """``seq`` breaks ``updated_at`` ties: ``now()`` is the transaction start,
+    so threads created in one transaction share the same timestamp."""
+    from sqlalchemy import BigInteger
+
+    conversations = metadata.tables["conversations"]
+    column = conversations.columns["seq"]
+    assert isinstance(column.type, BigInteger)
+    assert column.nullable is False
+
+
+def test_messages_position_is_unique_per_conversation(metadata):
+    """``position`` — not ``created_at`` — is the chronological order key."""
+    from sqlalchemy import Integer
+
+    messages = metadata.tables["messages"]
+    column = messages.columns["position"]
+    assert isinstance(column.type, Integer)
+    assert column.nullable is False
+    constraint = _constraint_by_name(messages, "uq_messages_conversation_position")
+    assert isinstance(constraint, UniqueConstraint)
+    assert [column.name for column in constraint.columns] == ["conversation_id", "position"]

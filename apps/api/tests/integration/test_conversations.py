@@ -153,7 +153,8 @@ async def test_create_lists_own_conversation_newest_first(migrated_db):
         listing = await client.get("/api/conversations", headers=_cookie(token))
     assert listing.status_code == 200
     conversations = listing.json()["conversations"]
-    assert [row["title"] for row in conversations] == ["New conversation", "First"]
+    # The chatted thread was auto-titled from the default to the first query.
+    assert [row["title"] for row in conversations] == ["alpha", "First"]
     for row in conversations:
         assert set(row) == {"id", "title", "created_at", "updated_at"}
 

@@ -5,7 +5,6 @@ pipeline calls as the production backend (ZREMRANGEBYSCORE + ZADD + ZCARD +
 EXPIRE), plus failure-injection fakes for the in-process fallback path.
 """
 
-import logging
 import uuid
 
 import pytest
@@ -143,19 +142,31 @@ async def test_backend_failure_falls_back_to_in_process_limit(clock) -> None:
     assert denied.retry_after_seconds >= 1
 
 
-async def test_fallback_logs_warning_only_once_per_window(clock, caplog) -> None:
+async def test_fallback_logs_warning_only_once_per_window(clock) -> None:
+    # Patch the module logger directly: caplog capture depends on handler
+    # propagation, which must not be trusted across logging setups — the
+    # once-per-window contract is what this test locks.
+    from unittest.mock import patch
+
     limiter, now = _limiter(FailingRedis(), clock, limit=100)
-    with caplog.at_level(logging.WARNING, logger="raguard_api.ratelimit"):
+    with patch("raguard_api.ratelimit.logger") as mock_logger:
         for _ in range(5):
             assert (await limiter.check(tenant="t", subject="s")).allowed
-    warnings = [r for r in caplog.records if "fallback" in r.getMessage().lower()]
-    assert len(warnings) == 1
-    # Next window: one fresh warning is acceptable again.
-    now[0] += 61
-    with caplog.at_level(logging.WARNING, logger="raguard_api.ratelimit"):
+        warnings = [
+            call
+            for call in mock_logger.warning.call_args_list
+            if "fallback" in str(call.args[0]).lower()
+        ]
+        assert len(warnings) == 1
+        # Next window: one fresh warning is acceptable again.
+        now[0] += 61
         assert (await limiter.check(tenant="t", subject="other")).allowed
-    warnings = [r for r in caplog.records if "fallback" in r.getMessage().lower()]
-    assert len(warnings) == 2
+        warnings = [
+            call
+            for call in mock_logger.warning.call_args_list
+            if "fallback" in str(call.args[0]).lower()
+        ]
+        assert len(warnings) == 2
 
 
 async def test_direct_calls_without_backend_use_fallback(clock) -> None:

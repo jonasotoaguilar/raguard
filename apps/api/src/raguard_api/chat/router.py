@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from raguard_api.authorization.capabilities import CHAT_USE
@@ -93,8 +93,19 @@ async def _persist_turn(
     """Persist the user turn and the assistant turn; touch ``updated_at``.
 
     Runs only after the response was fully built, so provider/citation 503s
-    leave no partial history behind.
+    leave no partial history behind. Positions are assigned incrementally
+    from the current max within the conversation (``func.now()`` is the
+    transaction start time, so ``created_at`` alone cannot order the two
+    turns of one request).
     """
+    next_position = (
+        await session.execute(
+            select(func.coalesce(func.max(Message.position), -1)).where(
+                Message.tenant_id == scope.tenant_id,
+                Message.conversation_id == conversation.id,
+            )
+        )
+    ).scalar_one()
     session.add(
         Message(
             tenant_id=scope.tenant_id,
@@ -102,6 +113,7 @@ async def _persist_turn(
             role="user",
             content=query,
             citations=[],
+            position=next_position + 1,
         )
     )
     session.add(
@@ -111,6 +123,7 @@ async def _persist_turn(
             role="assistant",
             content=response.answer or "",
             citations=[citation.model_dump(mode="json") for citation in response.citations],
+            position=next_position + 2,
         )
     )
     if conversation.title == DEFAULT_CONVERSATION_TITLE:
@@ -287,7 +300,7 @@ def create_conversations_router(*, session_factory: async_sessionmaker[AsyncSess
                     Conversation.tenant_id == scope.tenant_id,
                     Conversation.user_id == scope.user_id,
                 )
-                .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+                .order_by(Conversation.updated_at.desc(), Conversation.seq.desc())
             )
         ).scalars()
         return ConversationListResponse(
@@ -316,7 +329,7 @@ def create_conversations_router(*, session_factory: async_sessionmaker[AsyncSess
                     Message.tenant_id == scope.tenant_id,
                     Message.conversation_id == conversation.id,
                 )
-                .order_by(Message.created_at.asc(), Message.id.asc())
+                .order_by(Message.position.asc())
             )
         ).scalars()
         # Re-validate stored citations against the caller's CURRENT document

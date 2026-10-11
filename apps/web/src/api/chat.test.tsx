@@ -157,16 +157,14 @@ describe('conversations client', () => {
   })
 
   it('creates a conversation with an empty body by default', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        jsonResponse(201, {
-          id: 'c1',
-          title: 'New conversation',
-          created_at: 't',
-          updated_at: 't',
-        }),
-      )
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(201, {
+        id: 'c1',
+        title: 'New conversation',
+        created_at: 't',
+        updated_at: 't',
+      }),
+    )
     vi.stubGlobal('fetch', fetchMock)
 
     const result = await createConversation()
@@ -215,13 +213,11 @@ describe('conversations client', () => {
 
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockResolvedValue(
-          jsonResponse(404, {
-            error: { code: 'not_found', message: 'Missing' },
-          }),
-        ),
+      vi.fn().mockResolvedValue(
+        jsonResponse(404, {
+          error: { code: 'not_found', message: 'Missing' },
+        }),
+      ),
     )
     await expect(deleteConversation('gone')).rejects.toMatchObject({
       status: 404,

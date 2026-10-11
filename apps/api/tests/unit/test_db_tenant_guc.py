@@ -161,28 +161,33 @@ def test_database_url_uses_app_role_detects_restricted_credential():
     assert not database_url_uses_app_role("not-a-url")
 
 
-def test_create_app_warns_when_database_url_points_at_app_role(monkeypatch, caplog):
+def test_create_app_warns_when_database_url_points_at_app_role(monkeypatch):
     """Startup honesty: serving on raguard_app without tenant wiring fails."""
-    from unittest.mock import MagicMock
+    from unittest.mock import MagicMock, patch
 
     from raguard_api.config import Settings
     from raguard_api.main import create_app
 
     settings = Settings(jwt_secret="test-secret-0123456789abcdef1234")
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://raguard_app:s3cret@db:5432/raguard")
-    with caplog.at_level("WARNING", logger="raguard_api.main"):
+    # Patch the module logger directly: caplog capture depends on handler
+    # propagation, which the app's own logging setup must not be trusted to
+    # preserve — the warning contract is what this test locks.
+    with patch("raguard_api.main.logger") as mock_logger:
         create_app(settings=settings, session_factory=MagicMock())
-    assert any("raguard_app" in record.message for record in caplog.records)
+    messages = [str(call.args[0]) for call in mock_logger.warning.call_args_list]
+    assert any("raguard_app" in message for message in messages)
 
 
-def test_create_app_quiet_when_database_url_uses_owner(monkeypatch, caplog):
-    from unittest.mock import MagicMock
+def test_create_app_quiet_when_database_url_uses_owner(monkeypatch):
+    from unittest.mock import MagicMock, patch
 
     from raguard_api.config import Settings
     from raguard_api.main import create_app
 
     settings = Settings(jwt_secret="test-secret-0123456789abcdef1234")
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://raguard:s3cret@db:5432/raguard")
-    with caplog.at_level("WARNING", logger="raguard_api.main"):
+    with patch("raguard_api.main.logger") as mock_logger:
         create_app(settings=settings, session_factory=MagicMock())
-    assert not any("raguard_app" in record.message for record in caplog.records)
+    messages = [str(call.args[0]) for call in mock_logger.warning.call_args_list]
+    assert not any("raguard_app" in message for message in messages)

@@ -449,6 +449,16 @@ async def test_admin_delete_removes_row_chunks_and_object(migrated_db):
 
 async def test_cross_tenant_delete_is_neutral_404(migrated_db):
     ids = await _seed(migrated_db)
+    # Carol must hold documents.manage in HER tenant so the capability gate
+    # passes and the tenant predicate — not the 403 — decides the outcome.
+    async with migrated_db.session_factory() as session:
+        carol_role = (
+            await session.execute(
+                select(Role).where(Role.tenant_id == ids["tenant_b"], Role.name == "member")
+            )
+        ).scalar_one()
+        carol_role.capabilities = ["corpus.view", "chat.use", "documents.manage"]
+        await session.commit()
     app, settings, _, _ = _make_app(migrated_db)
     carol_token = _token(settings, user_id=ids["carol"], tenant_id=ids["tenant_b"])
     admin_token = _token(settings, user_id=ids["admin"], tenant_id=ids["tenant_a"])

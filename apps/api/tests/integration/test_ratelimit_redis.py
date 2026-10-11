@@ -89,13 +89,18 @@ async def test_rate_limiting_disabled_bypasses_with_real_redis(migrated_db) -> N
 
 
 async def test_excluded_paths_never_limited(migrated_db) -> None:
+    # /health, /ready, and /metrics bypass the limiter: with a budget of 1,
+    # any limited route would 429 on the second hit, while excluded paths
+    # keep serving. (An unknown /api/... path IS limited — 429 there is the
+    # correct behavior, not an exclusion.)
     app = await _make_app(
         migrated_db, _settings(rate_limit_requests=1, rate_limit_window_seconds=60)
     )
     async with _client(app) as client:
         for _ in range(3):
-            response = await client.get("/api/no-such-route")
-            assert response.status_code == 404  # routed, never 429
+            for path in ("/health", "/metrics"):
+                response = await client.get(path)
+                assert response.status_code == 200  # excluded, never 429
 
 
 async def test_sliding_window_unit_against_real_redis() -> None:
