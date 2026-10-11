@@ -2,11 +2,19 @@ import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type MouseEvent, useState } from 'react'
 import { ApiError } from '../api/client'
 import {
+  createGrant,
   type Document,
+  type DocumentGrant,
   type DocumentList,
+  type DocumentVisibility,
   deleteDocument,
+  deleteGrant,
+  type GranteeType,
   getDocument,
+  isDocumentVisibility,
   listDocuments,
+  listGrants,
+  updateDocumentVisibility,
   uploadDocument,
 } from '../api/documents'
 import { EmptyState, ErrorState, ForbiddenState, Skeleton } from '../app/shell'
@@ -51,6 +59,15 @@ export function documentsQueryOptions() {
  */
 export function documentDetailQueryKey(documentId: string) {
   return ['document', documentId] as const
+}
+
+/** Query options for one document's grants (managers only; 403 hides the section). */
+export function documentGrantsQueryOptions(documentId: string) {
+  return queryOptions({
+    queryKey: ['document-grants', documentId] as const,
+    queryFn: ({ signal }) => listGrants(documentId, { signal }),
+    retry: false,
+  })
 }
 
 /** Shared detail options: focus refetch on, no background polling. */
@@ -116,6 +133,79 @@ export function DocumentDetailPage({ documentId }: { documentId: string }) {
   const error = detail.error instanceof ApiError ? detail.error : null
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const grants = useQuery({
+    ...documentGrantsQueryOptions(documentId),
+    enabled: detail.isSuccess,
+  })
+  const [visibility, setVisibility] = useState<DocumentVisibility | null>(null)
+  const [visibilityError, setVisibilityError] = useState<string | null>(null)
+  const [savingVisibility, setSavingVisibility] = useState(false)
+  const [granteeType, setGranteeType] = useState<GranteeType>('user')
+  const [granteeId, setGranteeId] = useState('')
+  const [grantError, setGrantError] = useState<string | null>(null)
+  const [grantBusy, setGrantBusy] = useState(false)
+  const currentVisibility: DocumentVisibility =
+    visibility ??
+    (detail.data && isDocumentVisibility(detail.data.visibility)
+      ? detail.data.visibility
+      : 'tenant')
+
+  async function handleVisibilitySave() {
+    if (!detail.data || savingVisibility) return
+    setVisibilityError(null)
+    setSavingVisibility(true)
+    try {
+      await updateDocumentVisibility(documentId, currentVisibility)
+      setVisibility(null)
+      await queryClient.invalidateQueries({
+        queryKey: documentDetailQueryKey(documentId),
+      })
+      await queryClient.invalidateQueries({ queryKey: DOCUMENTS_QUERY_KEY })
+    } catch {
+      setVisibilityError('Could not update visibility. Please try again.')
+    } finally {
+      setSavingVisibility(false)
+    }
+  }
+
+  async function handleGrantAdd() {
+    const trimmed = granteeId.trim()
+    if (grantBusy || trimmed === '') return
+    setGrantError(null)
+    setGrantBusy(true)
+    try {
+      await createGrant(documentId, {
+        grantee_type: granteeType,
+        grantee_id: trimmed,
+      })
+      setGranteeId('')
+      await queryClient.invalidateQueries({
+        queryKey: ['document-grants', documentId],
+      })
+    } catch (err) {
+      setGrantError(
+        err instanceof ApiError ? err.message : 'Could not add the grant.',
+      )
+    } finally {
+      setGrantBusy(false)
+    }
+  }
+
+  async function handleGrantDelete(grant: DocumentGrant) {
+    if (grantBusy) return
+    setGrantError(null)
+    setGrantBusy(true)
+    try {
+      await deleteGrant(documentId, grant.id)
+      await queryClient.invalidateQueries({
+        queryKey: ['document-grants', documentId],
+      })
+    } catch {
+      setGrantError('Could not delete the grant. Please try again.')
+    } finally {
+      setGrantBusy(false)
+    }
+  }
 
   async function handleDelete() {
     if (!detail.data || deleting) return
@@ -188,6 +278,98 @@ export function DocumentDetailPage({ documentId }: { documentId: string }) {
             {deleting ? 'Deleting…' : 'Delete'}
           </button>
           {deleteError ? <p role="alert">{deleteError}</p> : null}
+          <h2>Visibility</h2>
+          <p>
+            Restricted documents are visible only to granted users or roles.
+          </p>
+          <label>
+            Visibility{' '}
+            <select
+              aria-label="Visibility"
+              value={currentVisibility}
+              onChange={(event) =>
+                setVisibility(event.target.value as DocumentVisibility)
+              }
+            >
+              <option value="tenant">Tenant</option>
+              <option value="restricted">Restricted</option>
+            </select>
+          </label>{' '}
+          <button
+            type="button"
+            onClick={() => void handleVisibilitySave()}
+            disabled={savingVisibility}
+          >
+            {savingVisibility ? 'Saving…' : 'Save visibility'}
+          </button>
+          {visibilityError ? <p role="alert">{visibilityError}</p> : null}
+          <h2>Grants</h2>
+          {grants.isPending ? <Skeleton label="Loading grants" /> : null}
+          {grants.isError ? (
+            grants.error instanceof ApiError && grants.error.status === 403 ? (
+              <p>Grant management needs a manager role.</p>
+            ) : (
+              <p role="alert">Could not load grants.</p>
+            )
+          ) : null}
+          {grants.isSuccess && grants.data.grants.length === 0 ? (
+            <p>No grants yet.</p>
+          ) : null}
+          {grants.isSuccess && grants.data.grants.length > 0 ? (
+            <ul>
+              {grants.data.grants.map((grant) => (
+                <li key={grant.id}>
+                  {grant.grantee_type}:{grant.grantee_id}{' '}
+                  <button
+                    type="button"
+                    aria-label={`Delete grant ${grant.id}`}
+                    onClick={() => void handleGrantDelete(grant)}
+                    disabled={grantBusy}
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {grants.isSuccess || grants.isError ? (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault()
+                void handleGrantAdd()
+              }}
+            >
+              <label>
+                Type{' '}
+                <select
+                  aria-label="Grantee type"
+                  value={granteeType}
+                  onChange={(event) =>
+                    setGranteeType(event.target.value as GranteeType)
+                  }
+                >
+                  <option value="user">user</option>
+                  <option value="role">role</option>
+                </select>
+              </label>{' '}
+              <label>
+                Grantee ID{' '}
+                <input
+                  aria-label="Grantee ID"
+                  value={granteeId}
+                  onChange={(event) => setGranteeId(event.target.value)}
+                  placeholder="uuid"
+                />
+              </label>{' '}
+              <button
+                type="submit"
+                disabled={grantBusy || granteeId.trim() === ''}
+              >
+                Add grant
+              </button>
+            </form>
+          ) : null}
+          {grantError ? <p role="alert">{grantError}</p> : null}
         </>
       ) : null}
     </section>

@@ -23,8 +23,18 @@ _FTS_CONFIG = "simple"
 TenantPredicate = Callable[[ColumnElement], ColumnElement[bool]]
 
 
-def build_keyword_query(*, tenant_predicate: TenantPredicate, limit: int) -> Select:
-    """Tenant-filtered FTS query: real tsquery matches only, ranked desc, chunk id asc."""
+def build_keyword_query(
+    *,
+    tenant_predicate: TenantPredicate,
+    limit: int,
+    visibility_predicate: ColumnElement[bool] | None = None,
+) -> Select:
+    """Tenant-filtered FTS query: real tsquery matches only, ranked desc, chunk id asc.
+
+    When ``visibility_predicate`` is given it is ANDed with the tenant
+    predicate in the same WHERE clause, BEFORE ranking — a restricted chunk
+    without a grant can never rank, fuse, or reach the prompt (F3 invariant).
+    """
     query = bindparam("query", type_=String)
     # The FTS config is a fixed code-level constant; only the query text binds.
     tsquery = func.plainto_tsquery(text(f"'{_FTS_CONFIG}'"), query)
@@ -44,6 +54,7 @@ def build_keyword_query(*, tenant_predicate: TenantPredicate, limit: int) -> Sel
         )
         .where(
             tenant_predicate(Chunk.tenant_id),
+            *([visibility_predicate] if visibility_predicate is not None else []),
             Chunk.search_vector.op("@@", is_comparison=True)(tsquery),
         )
         .order_by(rank.desc(), Chunk.id.asc())
@@ -52,7 +63,11 @@ def build_keyword_query(*, tenant_predicate: TenantPredicate, limit: int) -> Sel
 
 
 def build_semantic_query(
-    *, tenant_predicate: TenantPredicate, limit: int, max_distance: float
+    *,
+    tenant_predicate: TenantPredicate,
+    limit: int,
+    max_distance: float,
+    visibility_predicate: ColumnElement[bool] | None = None,
 ) -> Select:
     """Tenant-filtered cosine query within ``max_distance``, distance asc, chunk id asc.
 
@@ -79,6 +94,7 @@ def build_semantic_query(
         )
         .where(
             tenant_predicate(Chunk.tenant_id),
+            *([visibility_predicate] if visibility_predicate is not None else []),
             distance_expr <= bindparam("max_distance", value=max_distance, type_=Float),
         )
         .order_by(distance.asc(), Chunk.id.asc())

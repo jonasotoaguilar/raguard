@@ -1,9 +1,10 @@
-"""Unit tests: the single fresh-per-request authorization resolver (task 3.3).
+"""Unit tests: the single fresh-per-request authorization resolver (task 3.3 + F3).
 
 Resolution derives the scope exclusively from verified JWT claims (sub, tid)
 plus current database membership/role state. It must run a fresh query on every
 call, hold no capability state, and raise a generic authentication error when
-no current membership exists for the claimed tenant.
+no current membership exists for the claimed tenant. F3 adds the caller's
+role ids to the scope for per-document grants.
 """
 
 import uuid
@@ -17,6 +18,7 @@ from raguard_api.errors import AuthenticationError
 
 SUB = uuid.uuid4()
 TID = uuid.uuid4()
+ROLE_ID = uuid.uuid4()
 
 
 def _claims() -> TokenClaims:
@@ -30,22 +32,28 @@ def _claims() -> TokenClaims:
     )
 
 
-class _FakeResult:
-    def __init__(self, value):
-        self._value = value
+class _Row:
+    def __init__(self, role_id, capabilities):
+        self.role_id = role_id
+        self.capabilities = capabilities
 
-    def scalar_one_or_none(self):
-        return self._value
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
 
 
 class _FakeSession:
-    def __init__(self, value_provider):
-        self._value_provider = value_provider
+    def __init__(self, rows_provider):
+        self._rows_provider = rows_provider
         self.statements = []
 
     async def execute(self, statement):
         self.statements.append(statement)
-        return _FakeResult(self._value_provider())
+        return _FakeResult(self._rows_provider())
 
     async def __aenter__(self):
         return self
@@ -55,19 +63,19 @@ class _FakeSession:
 
 
 class _FakeFactory:
-    def __init__(self, value_provider):
-        self._value_provider = value_provider
+    def __init__(self, rows_provider):
+        self._rows_provider = rows_provider
         self.sessions = []
 
     def __call__(self):
-        session = _FakeSession(self._value_provider)
+        session = _FakeSession(self._rows_provider)
         self.sessions.append(session)
         return session
 
 
 class _CountingFactory(_FakeFactory):
-    def __init__(self, value_provider):
-        super().__init__(value_provider)
+    def __init__(self, rows_provider):
+        super().__init__(rows_provider)
         self.calls = 0
 
     def __call__(self):
@@ -76,18 +84,19 @@ class _CountingFactory(_FakeFactory):
 
 
 async def test_resolve_returns_scope_from_claims_and_db_role():
-    factory = _FakeFactory(lambda: [CORPUS_VIEW])
+    factory = _FakeFactory(lambda: [_Row(ROLE_ID, [CORPUS_VIEW])])
     resolver = AuthorizationResolver(session_factory=factory)
     scope = await resolver.resolve(_claims())
     assert scope.tenant_id == TID
     assert scope.user_id == SUB
     assert scope.has_capability(CORPUS_VIEW)
     assert not scope.has_capability(USERS_MANAGE)
+    assert scope.role_ids == frozenset({ROLE_ID})
 
 
 async def test_role_change_is_visible_on_next_request_without_cache():
     state = {"capabilities": [CORPUS_VIEW]}
-    factory = _FakeFactory(lambda: state["capabilities"])
+    factory = _FakeFactory(lambda: [_Row(ROLE_ID, state["capabilities"])])
     resolver = AuthorizationResolver(session_factory=factory)
     before = await resolver.resolve(_claims())
     assert not before.has_capability(USERS_MANAGE)
@@ -97,7 +106,7 @@ async def test_role_change_is_visible_on_next_request_without_cache():
 
 
 async def test_every_resolution_runs_a_fresh_query():
-    factory = _CountingFactory(lambda: [CORPUS_VIEW])
+    factory = _CountingFactory(lambda: [_Row(ROLE_ID, [CORPUS_VIEW])])
     resolver = AuthorizationResolver(session_factory=factory)
     await resolver.resolve(_claims())
     await resolver.resolve(_claims())
@@ -105,7 +114,7 @@ async def test_every_resolution_runs_a_fresh_query():
 
 
 async def test_resolution_query_is_parameterized_and_scoped_by_both_claims():
-    factory = _FakeFactory(lambda: [CORPUS_VIEW])
+    factory = _FakeFactory(lambda: [_Row(ROLE_ID, [CORPUS_VIEW])])
     resolver = AuthorizationResolver(session_factory=factory)
     await resolver.resolve(_claims())
     (statement,) = factory.sessions[0].statements
@@ -116,7 +125,7 @@ async def test_resolution_query_is_parameterized_and_scoped_by_both_claims():
 
 
 async def test_missing_membership_raises_generic_authentication_error():
-    factory = _FakeFactory(lambda: None)
+    factory = _FakeFactory(lambda: [])
     resolver = AuthorizationResolver(session_factory=factory)
     with pytest.raises(AuthenticationError) as excinfo:
         await resolver.resolve(_claims())

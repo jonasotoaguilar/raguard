@@ -30,21 +30,25 @@ class AuthorizationResolver:
     async def resolve(self, claims: TokenClaims) -> AuthorizationScope:
         """Resolve the current role grants for the verified identity."""
         statement = (
-            select(Role.capabilities)
+            select(Membership.role_id, Role.capabilities)
             .join(
-                Membership,
+                Role,
                 and_(Membership.role_id == Role.id, Membership.tenant_id == Role.tenant_id),
             )
             .where(Membership.user_id == claims.sub, Membership.tenant_id == claims.tid)
         )
         async with self._session_factory() as session:
-            capabilities = (await session.execute(statement)).scalar_one_or_none()
-        if capabilities is None:
+            rows = (await session.execute(statement)).all()
+        if not rows:
             raise AuthenticationError("Authentication required")
+        capabilities: set[str] = set()
+        for row in rows:
+            capabilities.update(row.capabilities or [])
         return AuthorizationScope(
             tenant_id=claims.tid,
             user_id=claims.sub,
             capabilities=frozenset(capabilities),
+            role_ids=frozenset(row.role_id for row in rows),
         )
 
 

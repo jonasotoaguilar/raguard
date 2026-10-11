@@ -257,3 +257,46 @@ describe('uploadDocument', () => {
     })
   })
 })
+
+describe('visibility and grants', () => {
+  it('PATCHes visibility with a JSON body', async () => {
+    const { updateDocumentVisibility } = await import('./documents')
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: '1',
+        name: 'a.pdf',
+        status: 'indexed',
+        failure_reason: null,
+        visibility: 'restricted',
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await updateDocumentVisibility('1', 'restricted')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DOCUMENTS_API_PATH}/1/visibility`,
+      expect.objectContaining({ method: 'PATCH' }),
+    )
+    expect(result.visibility).toBe('restricted')
+  })
+
+  it('round-trips grants list/create/delete', async () => {
+    const { createGrant, deleteGrant, listGrants } = await import('./documents')
+    const grant = { id: 'g1', grantee_type: 'user', grantee_id: 'u1' }
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(200, { grants: [grant] }))
+        .mockResolvedValueOnce(jsonResponse(201, grant))
+        .mockResolvedValueOnce(new Response(null, { status: 204 })),
+    )
+
+    await expect(listGrants('1')).resolves.toEqual({ grants: [grant] })
+    await expect(
+      createGrant('1', { grantee_type: 'user', grantee_id: 'u1' }),
+    ).resolves.toEqual(grant)
+    await expect(deleteGrant('1', 'g1')).resolves.toBeUndefined()
+  })
+})

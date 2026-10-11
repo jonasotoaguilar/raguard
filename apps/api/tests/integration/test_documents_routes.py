@@ -374,6 +374,7 @@ async def test_member_reads_own_document_detail(migrated_db):
         "name": "annual.pdf",
         "status": "indexed",
         "failure_reason": None,
+        "visibility": "tenant",
     }
 
 

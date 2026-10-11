@@ -8,7 +8,7 @@ that is not granted yields False.
 """
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -20,6 +20,10 @@ class AuthorizationScope:
     tenant_id: uuid.UUID
     user_id: uuid.UUID
     capabilities: frozenset[str]
+    # Role ids held by the user in this tenant (F3 per-document grants).
+    # One membership per user/tenant today, so usually zero or one entries;
+    # kept a set so future multi-role memberships need no contract change.
+    role_ids: frozenset[uuid.UUID] = field(default_factory=frozenset)
 
     def has_capability(self, capability: str) -> bool:
         """True only when the role grant set contains the capability."""
