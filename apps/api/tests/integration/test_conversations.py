@@ -10,6 +10,7 @@ plus the assistant turn with its verified citations while the stateless path
 (without ``conversation_id``) performs zero writes.
 """
 
+import asyncio
 import uuid
 
 import pytest
@@ -442,3 +443,54 @@ async def test_0004_tables_exist_and_round_trip(migrated_db):
             ).mappings()
         }
     assert {"conversations", "messages"} <= tables
+
+
+async def test_concurrent_appends_to_same_thread_stay_contiguous(migrated_db):
+    """G2 race guard: two concurrent appends persist 4 contiguous positions.
+
+    Both ``POST /api/chat`` run via ``asyncio.gather`` against the same
+    thread; the ``SELECT ... FOR UPDATE`` in ``_persist_turn`` serializes
+    them so neither violates ``uq_messages_conversation_position`` and the
+    stored positions are exactly 0..3 in chronological order.
+
+    Limitation: the ASGI transport shares one event loop, so this is not
+    true multi-connection parallelism — overlap happens at await points
+    (retrieval/completion) rather than OS threads. The real guarantee is
+    the row lock in PostgreSQL, which this test exercises end-to-end on a
+    migrated database (runs in CI; skipped locally without PostgreSQL).
+    """
+    ids = await _seed(migrated_db)
+    app, settings, _ = _make_app(migrated_db)
+    token = _token(settings, user_id=ids["owner"], tenant_id=ids["tenant_a"])
+    async with _client(app) as client:
+        created = await client.post(
+            "/api/conversations", json={"title": "Race"}, headers=_cookie(token)
+        )
+        conversation_id = created.json()["id"]
+
+        async def _chat(query: str):
+            async with _client(app) as inner:
+                return await inner.post(
+                    "/api/chat",
+                    json={"query": query, "conversation_id": conversation_id},
+                    headers=_cookie(token),
+                )
+
+        first, second = await asyncio.gather(_chat("alpha"), _chat("alpha"))
+    assert first.status_code == 200
+    assert second.status_code == 200
+    async with migrated_db.session_factory() as session:
+        from raguard_api.chat.models import Message
+
+        positions = (
+            (
+                await session.execute(
+                    select(Message.position)
+                    .where(Message.conversation_id == uuid.UUID(conversation_id))
+                    .order_by(Message.position.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert sorted(positions) == [0, 1, 2, 3]
