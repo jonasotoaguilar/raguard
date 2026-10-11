@@ -65,7 +65,12 @@ services:
 
   caddy:
     image: caddy:2.11.4-alpine
-    profiles: ["proxy"]
+    # Gated behind `proxy` (standalone proxy, as before) and `app` (full
+    # application stack: `docker compose --profile app up` brings Caddy up
+    # alongside the profile-gated `api`/`web` backends). Still excluded from
+    # the default (profile-less) stack. No depends_on: with `proxy` alone the
+    # backends do not exist, and Caddy retries upstreams on its own.
+    profiles: ["proxy", "app"]
     ports:
       - "127.0.0.1:80:80"
     volumes:
@@ -161,6 +166,84 @@ services:
       minio-init:
         condition: service_completed_successfully
     restart: unless-stopped
+    networks: [raguard]
+
+  # FastAPI service (apps/api/Dockerfile, F6). Profile-gated (`app`), so the
+  # default stack is unchanged: plain `up` still starts only
+  # postgres/redis/minio/minio-init/worker. Uvicorn serves the
+  # `create_default_app` factory on the internal network; Caddy is the sole
+  # ingress (`/api/*` -> api:8000), so no port is published to the host.
+  # Environment mirrors the worker (service-network hostnames for
+  # postgres/redis/minio) plus the API-only settings: JWT_*, session cookie
+  # (SECURE defaults false: local Caddy is plain http), provider/chat
+  # selectors, and the F4 rate-limit bounds. TRUST_PROXY_HEADERS defaults to
+  # true here because the only ingress is the compose Caddy (which sets
+  # X-Forwarded-For itself); host-side runs keep the code default false.
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    profiles: ["app"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-raguard}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-raguard}
+      JOB_QUEUE_REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      RATE_LIMIT_REDIS_URL: ${RATE_LIMIT_REDIS_URL:-}
+      OBJECT_STORE_ENDPOINT_URL: http://minio:9000
+      OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET:-raguard-documents}
+      OBJECT_STORE_ACCESS_KEY: ${MINIO_ROOT_USER:-raguard}
+      OBJECT_STORE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      OBJECT_STORE_REGION: us-east-1
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+      CHAT_PROVIDER: ${CHAT_PROVIDER:-openai}
+      CHAT_MODEL: ${CHAT_MODEL:-gpt-4o-mini}
+      CHAT_MAX_OUTPUT_TOKENS: ${CHAT_MAX_OUTPUT_TOKENS:-500}
+      CHAT_RETRIES: ${CHAT_RETRIES:-2}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen3:1.7b}
+      PROVIDER_TIMEOUT_SECONDS: ${PROVIDER_TIMEOUT_SECONDS:-30}
+      RETRIEVAL_SEMANTIC_MAX_DISTANCE: ${RETRIEVAL_SEMANTIC_MAX_DISTANCE:-0.5}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_ISSUER: ${JWT_ISSUER:-raguard}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-raguard-api}
+      JWT_EXPIRY_MINUTES: ${JWT_EXPIRY_MINUTES:-15}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-raguard_session}
+      SESSION_COOKIE_PATH: ${SESSION_COOKIE_PATH:-/api}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-lax}
+      ALLOWED_ORIGINS: '${ALLOWED_ORIGINS:-["http://localhost:5173", "http://localhost"]}'
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-60}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks: [raguard]
+
+  # Web frontend (apps/web/Dockerfile, F6): Vite dev server on :5173 behind
+  # Caddy (same-origin `/api/*` keeps session cookies first-party). Profile-
+  # gated (`app`); ordered after `api` for startup only (no health gate: the
+  # dev server needs nothing from the API at boot). No published port: Caddy
+  # is the sole ingress. Source is baked into the image; refresh with
+  # `docker compose --profile app build web`.
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    profiles: ["app"]
+    depends_on:
+      api:
+        condition: service_started
     networks: [raguard]
 
 volumes:

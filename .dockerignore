@@ -18,5 +18,8 @@ docs
 infra
 .github
 coverage
-apps/web
+apps/web/node_modules
+apps/web/dist
+apps/web/test-results
+apps/web/playwright-report
 apps/*/tests

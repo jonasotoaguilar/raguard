@@ -100,7 +100,21 @@ docker compose -f infra/compose.yaml config
 docker compose -f infra/compose.yaml up -d
 ```
 
-The Caddy reverse proxy is gated behind the `proxy` profile (`docker compose --profile proxy up`); it routes to `apps/api` and `apps/web`. Neither runs in the default stack (compose wires infrastructure plus the worker; the API runs on the host via `uv`), so the proxy profile becomes useful once those services run alongside it.
+The Caddy reverse proxy is gated behind the `proxy` profile (`docker compose --profile proxy up`); it routes `/api/*` to `api:8000` and everything else to `web:5173`. Neither backend runs in the default stack (compose wires infrastructure plus the worker; the API runs on the host via `uv`), so the proxy profile becomes useful once those services run alongside it.
+
+### Full Application Stack (`app` profile)
+
+The API and web run as compose services behind Caddy, both gated behind the `app` profile — the default (profile-less) stack is unchanged (PostgreSQL, Redis, MinIO, bucket init, worker).
+
+```bash
+docker compose -f infra/compose.yaml --profile app up -d --build
+```
+
+- `api` (`apps/api/Dockerfile`): uvicorn serving the `create_default_app` factory from `apps/api/src/raguard_api/main.py` on `api:8000`. Environment mirrors the worker (service-network URLs) plus JWT/session-cookie, provider/chat, retrieval, and `RATE_LIMIT_*` settings; all values come from `.env` (no new variables — `.env.example` already documents them). No host port is published: Caddy is the sole ingress.
+- `web` (`apps/web/Dockerfile`): Vite dev server on `web:5173` (decision: dev server, not a static build — the Caddyfile already expects `web:5173`, the client calls the API over same-origin relative `/api/*` paths so no backend URL is baked in, and session cookies stay first-party). Source is baked into the image; refresh with `docker compose -f infra/compose.yaml --profile app build web`.
+- `caddy` carries both `proxy` and `app` profiles, so `--profile app up` serves the whole stack: web at `http://localhost/`, API at `http://localhost/api/*`.
+
+Notes: local Caddy is plain HTTP, so the compose `api` defaults `SESSION_COOKIE_SECURE=false` (override in `.env` behind real TLS) and `TRUST_PROXY_HEADERS=true` (Caddy is the only ingress and sets `X-Forwarded-For` itself; a `.env` copied from `.env.example` pins `false`, which stays safe but shares one rate-limit bucket per proxy IP). Outside the default stack: `api`, `web`, `caddy` (`proxy`/`app`), and `ollama` (`local-ai`).
 
 > **MinIO caveat:** the MinIO image in the compose stack is pinned for **local development only**. The upstream MinIO project is no longer maintained and points to AIStor; revalidate the image before any production use. Production object-storage targets are S3 or Cloudflare R2 (ADR-0006).
 

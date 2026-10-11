@@ -24,6 +24,7 @@ from raguard_api.auth.router import create_auth_router
 from raguard_api.chat.providers import create_completer
 from raguard_api.chat.router import create_chat_router, create_conversations_router
 from raguard_api.config import Settings, get_settings
+from raguard_api.db import create_engine, create_session_factory, get_database_url
 from raguard_api.documents.queue import ArqJobQueue
 from raguard_api.documents.router import create_documents_router
 from raguard_api.documents.storage import S3ObjectStore, create_s3_client
@@ -160,3 +161,19 @@ def create_app(
     )
     app.include_router(create_conversations_router(session_factory=session_factory))
     return app
+
+
+def create_default_app() -> FastAPI:
+    """Compose/uvicorn entrypoint: build the app from the process environment.
+
+    Reads ``Settings`` from the environment (``JWT_SECRET`` and friends) and
+    ``DATABASE_URL`` for the async engine, then delegates to :func:`create_app`.
+    Served as ``uvicorn --factory raguard_api.main:create_default_app`` (see
+    ``apps/api/Dockerfile``). A factory — rather than a module-level ``app`` —
+    keeps the import side-effect free, so tests keep composing the app via
+    ``create_app`` with explicit settings and a missing/invalid environment
+    fails fast only when the server actually starts.
+    """
+    settings = Settings()
+    engine = create_engine(get_database_url())
+    return create_app(settings=settings, session_factory=create_session_factory(engine))

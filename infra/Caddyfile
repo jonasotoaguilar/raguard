@@ -1,9 +1,26 @@
 http://localhost {
+	# API + web run as profile-gated compose services (`app`); Caddy is the
+	# sole ingress, so neither backend publishes a host port. Timeouts stay
+	# generous for chat completions; X-Forwarded-Proto is explicit so the API
+	# sees the original scheme (X-Forwarded-For is set by Caddy by default and
+	# honored by the API only with TRUST_PROXY_HEADERS=true).
 	handle /api/* {
-		reverse_proxy api:8000
+		reverse_proxy api:8000 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 60s
+			}
+			header_up X-Forwarded-Proto {scheme}
+		}
 	}
 
 	handle {
-		reverse_proxy web:5173
+		reverse_proxy web:5173 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 60s
+			}
+			header_up X-Forwarded-Proto {scheme}
+		}
 	}
 }
