@@ -1,0 +1,40 @@
+# Dependabot policy for raguard (versioned; complements any UI-level settings).
+#
+# NOTE on pnpm `minimumReleaseAge` (pnpm-workspace.yaml, 20160 min = 14 days):
+# freshly published versions are rejected at install time. When Dependabot
+# proposes a version younger than 14 days (e.g. a nanoid security release),
+# the updater job fails with a resolution/install error even though the
+# version is correct. Procedure: if the update is a SECURITY fix, add the
+# package name to `minimumReleaseAgeExclude` in pnpm-workspace.yaml (as
+# already done for seroval / source-map-js / undici); otherwise wait for
+# the version to age past the window and let the next weekly run pick it up.
+# Never add `ignore` rules here to silence security updates.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-deps:
+        patterns:
+          - '*'
+    open-pull-requests-limit: 5
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      uv-deps:
+        patterns:
+          - '*'
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions-deps:
+        patterns:
+          - '*'
+    open-pull-requests-limit: 5

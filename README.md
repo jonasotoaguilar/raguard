@@ -228,6 +228,12 @@ The `raguard_app` role holds no grants on `users`/`tenants` and no router sets `
 >
 > **API E2E stays opt-in:** `apps/api/tests/e2e/` (`uv run pytest -m e2e`) requires a real `OPENAI_API_KEY` and makes live provider calls, so it is credential-gated and intentionally NOT in CI — run it manually when you need the provider smoke.
 
+### Dependency Maintenance (Dependabot + `minimumReleaseAge`)
+
+Dependabot policy is versioned in `.github/dependabot.yml` (weekly, grouped per ecosystem: `npm` for `pnpm-lock.yaml`, `uv` for `uv.lock`, `github-actions` for workflows). There are no `ignore` rules hiding security updates.
+
+`pnpm-workspace.yaml` sets `minimumReleaseAge: 20160` (14 days), so freshly published versions are rejected at install time. When Dependabot proposes a version younger than 14 days, the updater job fails with a resolution/install error even though the version is correct. Procedure: if the update is a SECURITY fix, add the package to `minimumReleaseAgeExclude` (as already done for seroval / source-map-js / undici); otherwise wait for the version to age out and let the next weekly run pick it up.
+
 ### Git Hooks (Lefthook)
 
 Lefthook is installed and active (`lefthook.yml`):
