@@ -143,6 +143,22 @@ Select the local path with `EMBEDDING_PROVIDER=ollama` and/or `CHAT_PROVIDER=oll
 
 Every `/api/*` route is guarded per tenant+user (or client IP without a verified identity): `RATE_LIMIT_REQUESTS` requests per `RATE_LIMIT_WINDOW_SECONDS` seconds (defaults 60/60, `RATE_LIMIT_ENABLED=true` to bypass explicitly). Identity comes from the verified session JWT (cookie or `Authorization: Bearer`); otherwise the direct peer IP is used — `X-Forwarded-For` is honored only when `TRUST_PROXY_HEADERS=true` (default false, so untrusted headers never widen or poison buckets). Over the limit, the API returns the safe `429 {error: {code: "rate_limited"}}` envelope with a `Retry-After` header and no internal detail; `/health`, `/metrics`, and non-`/api/` paths are never limited. State lives in Redis sorted sets (`RATELIMIT_REDIS_URL`, defaulting to the job-queue Redis) as a true sliding window over the current plus previous bucket (`ratelimit:{tenant}:{subject}:{bucket}`); if Redis is unreachable the limiter degrades to an in-process per-worker counter enforcing the same bound (never unlimited) and logs one warning per window. See `apps/api/src/raguard_api/ratelimit.py` and `RateLimitMiddleware` in `apps/api/src/raguard_api/main.py`; unit contract in `apps/api/tests/unit/test_ratelimit.py`, Redis-backed integration in `apps/api/tests/integration/test_ratelimit_redis.py` (skipped without the local stack, run in CI).
 
+### Row-Level Security Hardening (opt-in)
+
+Tenant isolation is enforced at the application layer (retrieval predicates before ranking — the non-negotiable invariant). Migration `0006_row_level_security` adds a second line of defense: non-`FORCE` row-level security with a `tenant_isolation` policy on every tenant-scoped table (`documents`, `chunks`, `conversations`, `messages`, `document_grants`, `memberships`, `roles`) plus a non-owner application role `raguard_app` (`NOLOGIN` by default; `GRANT USAGE ON SCHEMA public` + `SELECT, INSERT, UPDATE, DELETE` on those tables). Because RLS is not `FORCE`, the table owner still bypasses it — the default deployment is unchanged.
+
+To adopt the hardened path, set a password for the role and point `DATABASE_URL` at it (see the commented example in `infra/compose.yaml`):
+
+```sql
+ALTER ROLE raguard_app WITH LOGIN PASSWORD '<strong-secret>';
+```
+
+```bash
+DATABASE_URL=postgresql+psycopg://raguard_app:<strong-secret>@127.0.0.1:5432/raguard
+```
+
+With the GUC `app.tenant_id` unset/empty the policies match nothing, so sessions must scope via `tenant_scoped_session(session_factory, tenant_id)` in `apps/api/src/raguard_api/db.py` (the `after_begin` hook emits `SET LOCAL app.tenant_id`). Existing routers keep using plain `session_factory()` and behave exactly as before. Downgrading past `0006` drops the policies but intentionally keeps the `raguard_app` role so hardened deployments do not break. Covered by `apps/api/tests/unit/test_db_tenant_guc.py` and `apps/api/tests/integration/test_rls.py` (skipped without the local stack, run in CI).
+
 ### Validation & Checks
 
 | Command | What it does | Result (verified 2026-08-24 on `main` `707245a`) |
