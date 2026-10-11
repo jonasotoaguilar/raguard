@@ -12,7 +12,9 @@ import pytest
 from raguard_api.db import (
     TENANT_GUC,
     _after_begin_set_tenant,
+    assert_rls_ready,
     clear_session_tenant,
+    database_url_uses_app_role,
     get_session_tenant,
     set_session_tenant,
     tenant_scoped_session,
@@ -131,3 +133,56 @@ def test_emitted_sql_matches_set_local_shape():
     _after_begin_set_tenant(session, None, conn)
     expected = text(f"SET LOCAL {TENANT_GUC} = '{tenant_id}'")
     assert conn.statements[0] == str(expected)
+
+
+def test_assert_rls_ready_passes_for_owner_without_tenant():
+    """The default owner path bypasses RLS: no tenant context required."""
+    assert_rls_ready(current_role="raguard", tenant_id=None)
+
+
+def test_assert_rls_ready_rejects_app_role_without_tenant():
+    """Under raguard_app with no GUC every policy matches nothing: fail loud."""
+    with pytest.raises(RuntimeError, match="app.tenant_id"):
+        assert_rls_ready(current_role="raguard_app", tenant_id=None)
+
+
+def test_assert_rls_ready_passes_for_app_role_with_tenant():
+    assert_rls_ready(current_role="raguard_app", tenant_id=str(uuid.uuid4()))
+
+
+def test_database_url_uses_app_role_detects_restricted_credential():
+    assert database_url_uses_app_role(
+        "postgresql+psycopg://raguard_app:secret@127.0.0.1:5432/raguard"
+    )
+    assert not database_url_uses_app_role(
+        "postgresql+psycopg://raguard:secret@127.0.0.1:5432/raguard"
+    )
+    assert not database_url_uses_app_role("")
+    assert not database_url_uses_app_role("not-a-url")
+
+
+def test_create_app_warns_when_database_url_points_at_app_role(monkeypatch, caplog):
+    """Startup honesty: serving on raguard_app without tenant wiring fails."""
+    from unittest.mock import MagicMock
+
+    from raguard_api.config import Settings
+    from raguard_api.main import create_app
+
+    settings = Settings(jwt_secret="test-secret-0123456789abcdef1234")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://raguard_app:s3cret@db:5432/raguard")
+    with caplog.at_level("WARNING", logger="raguard_api.main"):
+        create_app(settings=settings, session_factory=MagicMock())
+    assert any("raguard_app" in record.message for record in caplog.records)
+
+
+def test_create_app_quiet_when_database_url_uses_owner(monkeypatch, caplog):
+    from unittest.mock import MagicMock
+
+    from raguard_api.config import Settings
+    from raguard_api.main import create_app
+
+    settings = Settings(jwt_secret="test-secret-0123456789abcdef1234")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://raguard:s3cret@db:5432/raguard")
+    with caplog.at_level("WARNING", logger="raguard_api.main"):
+        create_app(settings=settings, session_factory=MagicMock())
+    assert not any("raguard_app" in record.message for record in caplog.records)

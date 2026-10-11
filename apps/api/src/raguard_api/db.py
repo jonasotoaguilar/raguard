@@ -12,6 +12,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
@@ -34,6 +35,38 @@ TENANT_GUC = "app.tenant_id"
 
 #: ``AsyncSession.info`` key holding the tenant UUID string for this session.
 TENANT_INFO_KEY = "tenant_id"
+
+#: Non-owner application role created by migration 0006 (NOLOGIN by default).
+#: Sessions under this role see only rows matching the tenant_isolation
+#: policy for the current ``app.tenant_id`` — with the GUC unset they match
+#: nothing, including the identity tables bootstrap/login need.
+APP_ROLE = "raguard_app"
+
+
+def database_url_uses_app_role(database_url: str) -> bool:
+    """True when the URL authenticates as the restricted ``raguard_app`` role."""
+    try:
+        return (urlparse(database_url).username or "") == APP_ROLE
+    except ValueError:
+        return False
+
+
+def assert_rls_ready(*, current_role: str, tenant_id: str | None) -> None:
+    """Fail fast when a session would run RLS-blind under the app role.
+
+    The table owner bypasses RLS, so owner sessions (migrations, bootstrap,
+    login) never need tenant context. Under ``raguard_app`` an unset
+    ``app.tenant_id`` matches zero rows on every tenant-scoped table —
+    including ``users``/``tenants`` — so bootstrap and login fail with bare
+    permission errors; raise a clear error instead. Request-serving code
+    passes the GUC value it set (e.g. via ``tenant_scoped_session``).
+    """
+    if current_role == APP_ROLE and not tenant_id:
+        raise RuntimeError(
+            "raguard_app role requires app.tenant_id to be set: "
+            "use the owner credential for migrations/bootstrap/login, or scope "
+            "request sessions via tenant_scoped_session(session_factory, tenant_id)"
+        )
 
 
 def get_database_url() -> str:

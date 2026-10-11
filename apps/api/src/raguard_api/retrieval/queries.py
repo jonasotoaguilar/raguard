@@ -27,11 +27,12 @@ def build_keyword_query(
     *,
     tenant_predicate: TenantPredicate,
     limit: int,
-    visibility_predicate: ColumnElement[bool] | None = None,
+    visibility_predicate: ColumnElement[bool],
 ) -> Select:
     """Tenant-filtered FTS query: real tsquery matches only, ranked desc, chunk id asc.
 
-    When ``visibility_predicate`` is given it is ANDed with the tenant
+    ``visibility_predicate`` is mandatory (no default) so retrieval cannot be
+    compiled without the visibility filter: it is ANDed with the tenant
     predicate in the same WHERE clause, BEFORE ranking — a restricted chunk
     without a grant can never rank, fuse, or reach the prompt (F3 invariant).
     """
@@ -54,7 +55,7 @@ def build_keyword_query(
         )
         .where(
             tenant_predicate(Chunk.tenant_id),
-            *([visibility_predicate] if visibility_predicate is not None else []),
+            visibility_predicate,
             Chunk.search_vector.op("@@", is_comparison=True)(tsquery),
         )
         .order_by(rank.desc(), Chunk.id.asc())
@@ -67,14 +68,16 @@ def build_semantic_query(
     tenant_predicate: TenantPredicate,
     limit: int,
     max_distance: float,
-    visibility_predicate: ColumnElement[bool] | None = None,
+    visibility_predicate: ColumnElement[bool],
 ) -> Select:
     """Tenant-filtered cosine query within ``max_distance``, distance asc, chunk id asc.
 
     ``max_distance`` is a pgvector cosine-distance cutoff (0..2): candidates
     are real matches only, so a populated tenant with no semantically relevant
     chunk returns the neutral empty result. Like every other value, the cutoff
-    binds as a parameter and never appears as a literal.
+    binds as a parameter and never appears as a literal. ``visibility_predicate``
+    is mandatory (no default) so retrieval cannot be compiled without the
+    visibility filter.
     """
     embedding = bindparam("embedding", type_=HALFVEC(EMBEDDING_DIMENSION))
     distance_expr = Chunk.embedding.cosine_distance(embedding)
@@ -94,7 +97,7 @@ def build_semantic_query(
         )
         .where(
             tenant_predicate(Chunk.tenant_id),
-            *([visibility_predicate] if visibility_predicate is not None else []),
+            visibility_predicate,
             distance_expr <= bindparam("max_distance", value=max_distance, type_=Float),
         )
         .order_by(distance.asc(), Chunk.id.asc())

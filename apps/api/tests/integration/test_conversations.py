@@ -20,10 +20,10 @@ from raguard_api.chat.contracts import FakeCompleter
 from raguard_api.chat.router import create_chat_router, create_conversations_router
 from raguard_api.config import Settings, get_settings
 from raguard_api.documents.contracts import FakeEmbedder
-from raguard_api.documents.models import Chunk, Document
+from raguard_api.documents.models import Chunk, Document, DocumentGrant
 from raguard_api.errors import register_error_handlers
 from raguard_api.identity.models import Membership, Role, Tenant, User
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 
 pytestmark = pytest.mark.integration
 
@@ -336,6 +336,76 @@ async def test_unauthenticated_conversation_access_is_401(migrated_db):
         assert created.status_code == 401
         listing = await client.get("/api/conversations")
         assert listing.status_code == 401
+
+
+async def test_get_refilters_citations_after_grant_revoked(migrated_db):
+    """History reads re-validate citations: a revoked grant hides chunk text.
+
+    The assistant message text is preserved but its citations shrink to []
+    once the underlying restricted document is no longer visible — the same
+    visibility semantics retrieval enforces before ranking.
+    """
+    ids = await _seed(migrated_db)
+    app, settings, _ = _make_app(migrated_db)
+    token = _token(settings, user_id=ids["owner"], tenant_id=ids["tenant_a"])
+    async with migrated_db.session_factory() as session:
+        doc = Document(
+            tenant_id=ids["tenant_a"],
+            name="secret.pdf",
+            status="indexed",
+            storage_key=f"{ids['tenant_a']}/secret/secret.pdf",
+            dispatch_ready=True,
+            visibility="restricted",
+        )
+        session.add(doc)
+        await session.flush()
+        session.add(
+            Chunk(
+                tenant_id=ids["tenant_a"],
+                document_id=doc.id,
+                position=0,
+                content="quasar tango",
+                embedding=FakeEmbedder().embed(["quasar tango"])[0],
+            )
+        )
+        session.add(
+            DocumentGrant(
+                tenant_id=ids["tenant_a"],
+                document_id=doc.id,
+                grantee_type="user",
+                grantee_id=ids["owner"],
+            )
+        )
+        await session.commit()
+        doc_id = doc.id
+    async with _client(app) as client:
+        created = await client.post("/api/conversations", json={}, headers=_cookie(token))
+        conversation_id = created.json()["id"]
+        chat = await client.post(
+            "/api/chat",
+            json={"query": "quasar tango", "conversation_id": conversation_id},
+            headers=_cookie(token),
+        )
+        assert chat.status_code == 200
+        assert len(chat.json()["citations"]) == 1
+        before = await client.get(f"/api/conversations/{conversation_id}", headers=_cookie(token))
+        assert len(before.json()["messages"][1]["citations"]) == 1
+        # Revoke the grant: fresh retrieval would now hide the chunk...
+        async with migrated_db.session_factory() as session:
+            await session.execute(
+                delete(DocumentGrant).where(
+                    DocumentGrant.tenant_id == ids["tenant_a"],
+                    DocumentGrant.document_id == doc_id,
+                )
+            )
+            await session.commit()
+        # ...and so must the history read: text kept, citations emptied.
+        after = await client.get(f"/api/conversations/{conversation_id}", headers=_cookie(token))
+    assert after.status_code == 200
+    messages = after.json()["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[1]["content"] == "Grounded [1]."
+    assert messages[1]["citations"] == []
 
 
 async def test_0004_tables_exist_and_round_trip(migrated_db):

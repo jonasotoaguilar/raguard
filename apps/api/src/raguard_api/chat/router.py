@@ -52,6 +52,8 @@ from raguard_api.chat.prompts import build_completion_prompt
 from raguard_api.chat.providers.openai import CompletionError
 from raguard_api.config import Settings
 from raguard_api.documents.contracts import Embedder
+from raguard_api.documents.models import Document
+from raguard_api.documents.visibility import scope_visibility_clause
 from raguard_api.errors import (
     AuthorizationError,
     NotFoundError,
@@ -117,7 +119,19 @@ async def _persist_turn(
     await session.commit()
 
 
-def _history_message(row: Message) -> HistoryMessage:
+def _history_message(
+    row: Message, visible_document_ids: set[uuid.UUID] | frozenset
+) -> HistoryMessage:
+    """Rebuild one stored turn, re-filtering citations against CURRENT visibility.
+
+    Stored citations carry chunk content, so a grant revoked after the turn
+    was written must not keep leaking restricted text through history reads:
+    each citation is re-validated against the caller's current visibility
+    (same semantics as retrieval — ``visibility='tenant'`` or a user/role
+    grant) and only still-visible citations are returned. The assistant
+    message text itself is preserved; a turn left with no visible citations
+    is returned with ``citations: []`` (the message is never deleted here).
+    """
     raw = row.citations if isinstance(row.citations, list) else []
     citations = []
     for entry in raw:
@@ -129,11 +143,12 @@ def _history_message(row: Message) -> HistoryMessage:
                 row.conversation_id,
                 row.id,
             )
+    visible = [c for c in citations if c.document_id in visible_document_ids]
     return HistoryMessage(
         id=row.id,
         role=row.role,  # type: ignore[arg-type]
         content=row.content,
-        citations=citations,
+        citations=visible,
         created_at=row.created_at,
     )
 
@@ -304,12 +319,25 @@ def create_conversations_router(*, session_factory: async_sessionmaker[AsyncSess
                 .order_by(Message.created_at.asc(), Message.id.asc())
             )
         ).scalars()
+        # Re-validate stored citations against the caller's CURRENT document
+        # visibility: a revoked grant must stop serving restricted chunk text
+        # through history even though the turn was authorized when written.
+        visible_document_ids = set(
+            (
+                await session.execute(
+                    select(Document.id).where(
+                        Document.tenant_id == scope.tenant_id,
+                        scope_visibility_clause(scope),
+                    )
+                )
+            ).scalars()
+        )
         return ConversationDetailResponse(
             id=conversation.id,
             title=conversation.title,
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
-            messages=[_history_message(row) for row in rows],
+            messages=[_history_message(row, visible_document_ids) for row in rows],
         )
 
     @router.delete("/{conversation_id}", status_code=204)

@@ -38,6 +38,21 @@ READY_TIMEOUT_SECONDS = 2.0
 
 HISTOGRAM_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 
+#: Fixed method allowlist for metric labels. ``/health``/``/ready``/``/metrics``
+#: bypass rate limiting, so any client can send arbitrary method tokens;
+#: labeling series with the raw method would let callers mint unlimited
+#: series. Everything outside the allowlist collapses to ``"OTHER"``.
+ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
+
+OTHER_METHOD_LABEL = "OTHER"
+
+
+def normalize_method_label(method: str) -> str:
+    """Map a raw HTTP method to its fixed metric label."""
+    candidate = (method or "").upper()
+    return candidate if candidate in ALLOWED_METHODS else OTHER_METHOD_LABEL
+
+
 request_id_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "raguard_request_id", default=None
 )
@@ -170,12 +185,13 @@ class MetricsRegistry:
     def observe_request(
         self, *, method: str, path_template: str, status: int, duration_seconds: float
     ) -> None:
-        key = (method, path_template, str(status))
+        label = normalize_method_label(method)
+        key = (label, path_template, str(status))
         self._requests[key] = self._requests.get(key, 0) + 1
-        histogram = self._durations.get((method, path_template))
+        histogram = self._durations.get((label, path_template))
         if histogram is None:
             histogram = _Histogram()
-            self._durations[(method, path_template)] = histogram
+            self._durations[(label, path_template)] = histogram
         histogram.observe(max(0.0, float(duration_seconds)))
 
     def set_ready(self, ready: bool) -> None:

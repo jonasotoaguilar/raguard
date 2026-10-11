@@ -12,6 +12,8 @@ tenant+user — or client IP without a verified identity — degrading to an
 in-process bound when Redis is unreachable.
 """
 
+import logging
+import os
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -41,6 +43,8 @@ from raguard_api.ratelimit import RateLimiter, build_rate_limiter
 from raguard_api.retrieval.embeddings import create_embedder
 from raguard_api.retrieval.router import create_retrieval_router
 
+logger = logging.getLogger(__name__)
+
 _EXCLUDED_PATHS = frozenset({"/health", "/ready", "/metrics"})
 
 
@@ -52,6 +56,11 @@ def _resolve_identity(request: Request, settings: Settings) -> tuple[str, str]:
     unauthenticated abuse still shares one bounded bucket. X-Forwarded-For is
     honored only when ``trust_proxy_headers`` is explicitly enabled —
     otherwise the direct peer address is used, never client-controlled input.
+
+    With exactly one trusted proxy (Caddy) the proxy APPENDS the observed TCP
+    peer as the RIGHTMOST hop, so only ``hops[-1]`` is trustworthy: every hop
+    to its left is client-controlled and freely spoofable. Do not enable the
+    flag behind more than one proxy without chain-aware parsing.
     """
     token = request.cookies.get(settings.session_cookie_name)
     if token is None:
@@ -68,9 +77,9 @@ def _resolve_identity(request: Request, settings: Settings) -> tuple[str, str]:
     ip = request.client.host if request.client is not None else "unknown"
     if settings.trust_proxy_headers:
         forwarded = request.headers.get("x-forwarded-for", "")
-        first = forwarded.split(",")[0].strip() if forwarded else ""
-        if first:
-            ip = first
+        hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+        if hops:
+            ip = hops[-1]
     return "anonymous", f"ip:{ip}"
 
 
@@ -138,6 +147,19 @@ def create_app(
     observability_checks: dict[str, CheckFn] | None = None,
 ) -> FastAPI:
     """Build the raguard API application with the standard error envelope."""
+    from raguard_api.db import database_url_uses_app_role
+
+    if database_url_uses_app_role(os.environ.get("DATABASE_URL", "")):
+        # Honesty guard, not enforcement: no router sets app.tenant_id today,
+        # so serving (and especially bootstrap/login, which need users/tenants
+        # rows the app role cannot see) on the raguard_app credential fails.
+        # Migrations + bootstrap + login must use the owner credential; see
+        # assert_rls_ready in db.py and the README RLS section.
+        logger.warning(
+            "DATABASE_URL authenticates as raguard_app, which cannot run "
+            "bootstrap/login and has no per-request tenant wiring: "
+            "migrations, bootstrap, and login require the owner credential"
+        )
     app = FastAPI(title="raguard API", version="0.1.0")
     register_error_handlers(app)
     app.dependency_overrides[get_settings] = lambda: settings

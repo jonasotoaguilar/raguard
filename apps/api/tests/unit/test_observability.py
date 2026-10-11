@@ -263,6 +263,40 @@ async def test_observability_paths_bypass_rate_limiting() -> None:
         assert (await client.get("/metrics")).status_code == 200
 
 
+async def test_arbitrary_method_normalizes_to_other_without_new_series() -> None:
+    """Unbounded methods must not explode Prometheus cardinality.
+
+    ``/health``/``/ready``/``/metrics`` bypass the rate limiter, so any
+    client can send arbitrary method tokens; only the fixed allowlist may
+    appear as a label, everything else collapses to ``OTHER``.
+    """
+    from raguard_api.observability import ALLOWED_METHODS, MetricsRegistry
+
+    registry = MetricsRegistry()
+    registry.observe_request(
+        method="FROBNICATE", path_template="unknown", status=200, duration_seconds=0.01
+    )
+    registry.observe_request(
+        method="WHATEVER", path_template="unknown", status=200, duration_seconds=0.01
+    )
+    body = registry.render()
+    assert 'method="OTHER"' in body
+    assert "FROBNICATE" not in body
+    assert "WHATEVER" not in body
+    # Both requests share one series — no per-value growth.
+    assert len(registry._requests) == 1
+    assert len(registry._durations) == 1
+    assert set(ALLOWED_METHODS) == {
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "HEAD",
+        "OPTIONS",
+    }
+
+
 async def test_metrics_memory_is_bounded_across_many_requests() -> None:
     """Regression (audit finding): raw samples must never accumulate.
 

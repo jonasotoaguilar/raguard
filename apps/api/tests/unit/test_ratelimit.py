@@ -293,7 +293,21 @@ async def test_middleware_ignores_forwarded_for_unless_trusted() -> None:
     trusted_app = _build_app(_settings(trust_proxy_headers=True), trusted_recorder)
     async with _client(trusted_app) as client:
         await client.get("/api/items", headers={"X-Forwarded-For": "9.9.9.9, 10.0.0.1"})
-    assert trusted_recorder.calls == [("anonymous", "ip:9.9.9.9")]
+    # Rightmost hop wins: with one trusted proxy (Caddy) the proxy appends
+    # the observed TCP peer last, so 10.0.0.1 — not the spoofable 9.9.9.9 —
+    # owns the bucket.
+    assert trusted_recorder.calls == [("anonymous", "ip:10.0.0.1")]
+
+
+async def test_middleware_trusted_proxy_ignores_spoofed_left_hop() -> None:
+    """A client-forged left hop must not move the bucket off the real peer."""
+    recorder = RecordingLimiter()
+    app = _build_app(_settings(trust_proxy_headers=True), recorder)
+    async with _client(app) as client:
+        # "9.9.9.9" is attacker-controlled; "10.0.0.5" is the peer our
+        # trusted proxy appended rightmost — the bucket must be the latter.
+        await client.get("/api/items", headers={"X-Forwarded-For": "9.9.9.9, 10.0.0.5"})
+    assert recorder.calls == [("anonymous", "ip:10.0.0.5")]
 
 
 async def test_middleware_invalid_token_falls_back_to_ip() -> None:

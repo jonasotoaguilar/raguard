@@ -165,7 +165,7 @@ Structured JSON access logs plus liveness/readiness and Prometheus metrics — n
 
 ### Rate Limiting
 
-Every `/api/*` route is guarded per tenant+user (or client IP without a verified identity): `RATE_LIMIT_REQUESTS` requests per `RATE_LIMIT_WINDOW_SECONDS` seconds (defaults 60/60, `RATE_LIMIT_ENABLED=true` to bypass explicitly). Identity comes from the verified session JWT (cookie or `Authorization: Bearer`); otherwise the direct peer IP is used — `X-Forwarded-For` is honored only when `TRUST_PROXY_HEADERS=true` (default false, so untrusted headers never widen or poison buckets). Over the limit, the API returns the safe `429 {error: {code: "rate_limited"}}` envelope with a `Retry-After` header and no internal detail; `/health`, `/metrics`, and non-`/api/` paths are never limited. State lives in Redis sorted sets (`RATELIMIT_REDIS_URL`, defaulting to the job-queue Redis) as a true sliding window over the current plus previous bucket (`ratelimit:{tenant}:{subject}:{bucket}`); if Redis is unreachable the limiter degrades to an in-process per-worker counter enforcing the same bound (never unlimited) and logs one warning per window. See `apps/api/src/raguard_api/ratelimit.py` and `RateLimitMiddleware` in `apps/api/src/raguard_api/main.py`; unit contract in `apps/api/tests/unit/test_ratelimit.py`, Redis-backed integration in `apps/api/tests/integration/test_ratelimit_redis.py` (skipped without the local stack, run in CI).
+Every `/api/*` route is guarded per tenant+user (or client IP without a verified identity): `RATE_LIMIT_REQUESTS` requests per `RATE_LIMIT_WINDOW_SECONDS` seconds (defaults 60/60, `RATE_LIMIT_ENABLED=true` to bypass explicitly). Identity comes from the verified session JWT (cookie or `Authorization: Bearer`); otherwise the direct peer IP is used — `X-Forwarded-For` is honored only when `TRUST_PROXY_HEADERS=true` (default false, so untrusted headers never widen or poison buckets; with exactly one trusted proxy the RIGHTMOST hop is used, since the proxy appends the observed peer last and left hops are client-spoofable). Over the limit, the API returns the safe `429 {error: {code: "rate_limited"}}` envelope with a `Retry-After` header and no internal detail; `/health`, `/metrics`, and non-`/api/` paths are never limited. State lives in Redis sorted sets (`RATELIMIT_REDIS_URL`, defaulting to the job-queue Redis) as a true sliding window over the current plus previous bucket (`ratelimit:{tenant}:{subject}:{bucket}`); if Redis is unreachable the limiter degrades to an in-process per-worker counter enforcing the same bound (never unlimited) and logs one warning per window. See `apps/api/src/raguard_api/ratelimit.py` and `RateLimitMiddleware` in `apps/api/src/raguard_api/main.py`; unit contract in `apps/api/tests/unit/test_ratelimit.py`, Redis-backed integration in `apps/api/tests/integration/test_ratelimit_redis.py` (skipped without the local stack, run in CI).
 
 ### Row-Level Security Hardening (opt-in)
 
@@ -182,6 +182,16 @@ DATABASE_URL=postgresql+psycopg://raguard_app:<strong-secret>@127.0.0.1:5432/rag
 ```
 
 With the GUC `app.tenant_id` unset/empty the policies match nothing, so sessions must scope via `tenant_scoped_session(session_factory, tenant_id)` in `apps/api/src/raguard_api/db.py` (the `after_begin` hook emits `SET LOCAL app.tenant_id`). Existing routers keep using plain `session_factory()` and behave exactly as before. Downgrading past `0006` drops the policies but intentionally keeps the `raguard_app` role so hardened deployments do not break. Covered by `apps/api/tests/unit/test_db_tenant_guc.py` and `apps/api/tests/integration/test_rls.py` (skipped without the local stack, run in CI).
+
+**Which credential runs what (read this before switching `DATABASE_URL`):**
+
+| Process | Credential | Why |
+|---|---|---|
+| Migrations + bootstrap | Owner (e.g. `raguard`) | DDL plus seed writes; bypasses RLS |
+| `POST /api/auth/login` | Owner | Looks up `users`/`tenants`, which grant nothing to `raguard_app` |
+| API request-serving (opt-in hardened) | `raguard_app` **with** `app.tenant_id` set per session | RLS backstop active |
+
+The `raguard_app` role holds no grants on `users`/`tenants` and no router sets `app.tenant_id` today, so bootstrap and login fail under that credential — this is by design, not a misconfiguration. Guard choice (deliberately least-invasive, no enforcement in routers): `assert_rls_ready(current_role, tenant_id)` in `db.py` fails fast with a clear error when a session would run RLS-blind under `raguard_app`, and `create_app` logs a startup warning when `DATABASE_URL` authenticates as `raguard_app` while the tenant wiring is not active. A warning — not a hard failure — because hardened request-serving on `raguard_app` is a supported explicit choice once callers scope their sessions.
 
 ### Validation & Checks
 
