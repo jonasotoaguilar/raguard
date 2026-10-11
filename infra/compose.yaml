@@ -240,6 +240,32 @@ services:
     restart: unless-stopped
     networks: [raguard]
 
+  # Prometheus (observability profile). Scrapes the `api` service at
+  # `api:8000/metrics` plus itself, using infra/prometheus.yml (scrape
+  # config) and infra/alerts.yml (rule_files) mounted read-only; rule
+  # evaluation state persists in the `prometheusdata` volume. Opt-in behind
+  # the `observability` profile so the default stack is unchanged:
+  #   docker compose -f infra/compose.yaml --profile app --profile observability up -d
+  # then open http://localhost:9090 (targets, alerts, and ad-hoc PromQL).
+  # Requires the `api` service (`app` profile); scraping a down target
+  # fires the ApiDown alert after 1m by design.
+  prometheus:
+    image: prom/prometheus:v3.10.0
+    profiles: ["observability"]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheusdata:/prometheus
+    depends_on:
+      api:
+        condition: service_started
+    networks: [raguard]
+
   # Web frontend (apps/web/Dockerfile, F6): Vite dev server on :5173 behind
   # Caddy (same-origin `/api/*` keeps session cookies first-party). Profile-
   # gated (`app`); ordered after `api` for startup only (no health gate: the
@@ -261,6 +287,7 @@ volumes:
   redisdata:
   miniodata:
   ollama:
+  prometheusdata:
   caddydata:
   caddyconfig:
 

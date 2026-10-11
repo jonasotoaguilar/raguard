@@ -1,0 +1,79 @@
+# Alert rules for the raguard API (see infra/prometheus.yml `rule_files`).
+# PRD KPI: time-to-first-answer p95 < 10 s (HighLatencyP95 guards it).
+# Metric names come from apps/api/src/raguard_api/observability.py:
+#   raguard_http_requests_total{method,path_template,status}
+#   raguard_http_request_duration_seconds_bucket{method,path_template,le}
+#   raguard_ready (gauge 1/0, set by each /ready check)
+#   raguard_http_rate_limited_total (counter of 429 rejections)
+# Validate: .venv/bin/python -c "import yaml; yaml.safe_load(open('infra/alerts.yml')); print('OK')"
+groups:
+  - name: raguard-api
+    rules:
+      - alert: ApiDown
+        expr: up{job="raguard-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "raguard API is not being scraped ({{ $labels.instance }})"
+          description: >-
+            Prometheus has not successfully scraped the raguard API for over a
+            minute. Check that the `api` service is running and healthy
+            (`GET /health`), then check Prometheus targets for scrape errors.
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(raguard_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(raguard_http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "raguard 5xx rate above 5% over the last 5 minutes"
+          description: >-
+            More than 5% of API responses are 5xx. Check `GET /ready`
+            (postgres/redis checks), recent access logs (request_id field),
+            and provider health (chat completions return a 503 envelope on
+            provider or citation failure).
+
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(raguard_http_request_duration_seconds_bucket[5m]))) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "raguard request p95 latency above the 10 s PRD KPI"
+          description: >-
+            Global p95 request latency exceeds the PRD time-to-first-answer
+            budget (p95 < 10 s) for 5 minutes. Reproduce with
+            `scripts/loadtest.py` (see README operation section), then check
+            provider latency/timeouts and retrieval load (pgvector HNSW,
+            `hnsw.ef_search`).
+
+      - alert: NotReady
+        expr: raguard_ready == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "raguard readiness gauge is 0 (degraded dependencies)"
+          description: >-
+            The API reports degraded readiness: `GET /ready` returned 503,
+            meaning PostgreSQL (`SELECT 1`) or Redis (`PING`) failed its 2 s
+            check. Verify both services are healthy before investigating the
+            API itself.
+
+      - alert: RateLimitSurge
+        expr: sum(rate(raguard_http_rate_limited_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "raguard rate-limit rejections above 1/sec over 5 minutes"
+          description: >-
+            Clients are being rejected with 429 `rate_limited` faster than
+            1/sec. Check whether traffic is legitimate (raise
+            `RATE_LIMIT_REQUESTS`/`RATE_LIMIT_WINDOW_SECONDS`) or abusive
+            (tighten bounds, inspect per-tenant buckets), and confirm
+            `TRUST_PROXY_HEADERS` matches the deployment topology.

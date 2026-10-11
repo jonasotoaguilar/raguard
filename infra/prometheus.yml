@@ -1,0 +1,22 @@
+# Prometheus scrape config for the raguard local stack.
+# The API exposes Prometheus text at GET /metrics (in-process registry in
+# apps/api/src/raguard_api/observability.py, no auth, never rate-limited).
+# Validate: .venv/bin/python -c "import yaml; yaml.safe_load(open('infra/prometheus.yml')); print('OK')"
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: raguard-api
+    metrics_path: /metrics
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["api:8000"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
