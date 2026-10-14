@@ -151,7 +151,7 @@ jobs:
       - name: Set up uv
         # setup-uv does not publish a @v9 major alias; pin to its latest
         # exact release tag (the repo's major-alias policy cannot apply here).
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.3.0
         with:
           enable-cache: true
           cache-dependency-glob: 'uv.lock'
