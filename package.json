@@ -10,7 +10,7 @@
     "test": "pnpm --recursive --if-present test"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.7",
+    "@biomejs/biome": "2.5.15",
     "lefthook": "2.1.10"
   }
 }
