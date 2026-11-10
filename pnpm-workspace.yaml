@@ -1,7 +1,7 @@
 packages:
   - apps/*
 
-# Security overrides for transitive advisories (Dependabot).
+# Security overrides for transitive advisories.
 overrides:
   seroval: '>=1.6.3'
   source-map-js: '>=1.2.2'
